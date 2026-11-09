@@ -8,7 +8,7 @@ final class ChatMessageCellTests: XCTestCase {
         cell.contentView.systemLayoutSizeFitting(
             CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel
+            verticalFittingPriority: .fittingSizeLevel,
         ).height
     }
 

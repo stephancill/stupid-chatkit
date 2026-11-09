@@ -30,7 +30,7 @@ StupidChatKit is the chat framework from stupid social (`../stupid-social`, `htt
 
 ## Formatting
 
-- Run `swiftformat Sources/ Tests/`.
+- Run `swiftformat Sources/ Tests/`. `.swiftformat` sets the Swift version (6.2), which keeps trailing commas in argument lists; without it swiftformat removes them.
 
 ## Releasing
 
