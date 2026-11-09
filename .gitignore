@@ -1,0 +1,9 @@
+.DS_Store
+/.build
+/.swiftpm
+/Packages
+xcuserdata/
+DerivedData/
+/third-party
+/logs
+__pycache__/
