@@ -367,6 +367,9 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     private var bubbleTop: NSLayoutConstraint!
     private var bubbleWidth: NSLayoutConstraint!
     private var systemTop: NSLayoutConstraint!
+    /// The cell's bottom: the bubble's (and its buttons') for a message, the caption's for a system message.
+    private var bubbleBottom: NSLayoutConstraint!
+    private var systemBottom: NSLayoutConstraint!
     private var incomingConstraints: [NSLayoutConstraint] = []
     private var ownConstraints: [NSLayoutConstraint] = []
 
@@ -484,8 +487,12 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         // The buttons follow the bubble; without any they take no room.
         buttonsTop = buttonsStack.topAnchor.constraint(equalTo: bubble.bottomAnchor)
         buttonsEmptyHeight = buttonsStack.heightAnchor.constraint(equalToConstant: 0)
-        let bubbleBottom = buttonsStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        bubbleBottom = buttonsStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         bubbleBottom.priority = .defaultHigh
+        // Without it a system caption's cell took the hidden bubble's height, and a long caption overflowed into
+        // the messages after it.
+        systemBottom = systemLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4)
+        systemBottom.priority = .defaultHigh
         // The bubble's width is computed from its content in `configure`; Auto Layout alone kept newly
         // inserted cells at their estimated (maximum) width.
         statusSlotWidth = statusSlot.widthAnchor.constraint(equalToConstant: 0)
@@ -701,8 +708,10 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         }
         systemLabel.isHidden = true
         systemTop.isActive = false
+        systemBottom.isActive = false
         bubble.isHidden = false
         bubbleTop.isActive = true
+        bubbleBottom.isActive = true
         bubbleTop.constant = layout.startsGroup ? 8 : 2
 
         NSLayoutConstraint.deactivate(layout.isOwn ? incomingConstraints : ownConstraints)
@@ -1140,9 +1149,11 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         bubble.isHidden = true
         avatarView.isHidden = true
         bubbleTop.isActive = false
+        bubbleBottom.isActive = false
         NSLayoutConstraint.deactivate(incomingConstraints + ownConstraints)
         systemLabel.isHidden = false
         systemTop.isActive = true
+        systemBottom.isActive = true
         systemTop.constant = startsGroup ? 10 : 4
         systemLabel.attributedText = body ?? NSAttributedString(string: message.sender.name, attributes: [
             .font: UIFont.preferredFont(forTextStyle: .footnote),
