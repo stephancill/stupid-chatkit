@@ -151,6 +151,51 @@ public protocol ChatButtonPressing: ChatAdapter {
     func press(_ button: ChatMessageButton, on messageId: String) async throws -> ChatButtonAnswer?
 }
 
+/// A choice the chat offers in its composer, such as the model an assistant answers with: an icon button at the end of
+/// the text row, which opens a menu of items headed by the current value.
+@MainActor
+public protocol ChatComposerMenus: ChatAdapter {
+    /// `nil` hides the button.
+    var composerMenu: ChatComposerMenu? { get }
+    /// The user chose an item. The adapter applies it and calls `onChange` when `composerMenu` changes.
+    func selectComposerMenuItem(_ itemId: String)
+}
+
+/// The composer's menu: its button's icon and the items it opens, in sections separated by lines.
+public struct ChatComposerMenu: Equatable, Sendable {
+    /// The current value, such as the selected model's name: the menu's heading and VoiceOver's value for the button.
+    public var title: String
+    /// What the button chooses, for VoiceOver, such as "Model".
+    public var accessibilityLabel: String
+    /// The button's SF Symbol; a filter icon by default.
+    public var systemImage: String
+    public var sections: [[ChatComposerMenuItem]]
+
+    public init(title: String, accessibilityLabel: String, systemImage: String = "line.3.horizontal.decrease", sections: [[ChatComposerMenuItem]]) {
+        self.title = title
+        self.accessibilityLabel = accessibilityLabel
+        self.systemImage = systemImage
+        self.sections = sections
+    }
+}
+
+public struct ChatComposerMenuItem: Equatable, Sendable, Identifiable {
+    public var id: String
+    public var title: String
+    public var subtitle: String?
+    public var systemImage: String?
+    /// Shown with a checkmark.
+    public var isSelected: Bool
+
+    public init(id: String, title: String, subtitle: String? = nil, systemImage: String? = nil, isSelected: Bool = false) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.systemImage = systemImage
+        self.isSelected = isSelected
+    }
+}
+
 /// Chats the user may only be allowed to read, such as a guest on a server that lets guests only read.
 @MainActor
 public protocol ChatReadOnlyAccess: ChatAdapter {
@@ -687,6 +732,10 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         adapter is any ChatButtonPressing
     }
 
+    override public func selectComposerMenuItem(_ itemId: String) {
+        (adapter as? any ChatComposerMenus)?.selectComposerMenuItem(itemId)
+    }
+
     override public func press(_ button: ChatMessageButton, on message: ChatMessage) async -> ChatButtonAnswer? {
         guard canUse(button, on: message), let pressing = adapter as? any ChatButtonPressing else { return nil }
         errorMessage = nil
@@ -821,6 +870,9 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         }
         if let typing = adapter as? any ChatTyping, typingNames != typing.typingNames {
             typingNames = typing.typingNames
+        }
+        if let menus = adapter as? any ChatComposerMenus, composerMenu != menus.composerMenu {
+            composerMenu = menus.composerMenu
         }
         if let unseen = adapter as? any ChatUnseenReactions, unseenReactionMessageIds != unseen.unseenReactionMessageIds {
             unseenReactionMessageIds = unseen.unseenReactionMessageIds

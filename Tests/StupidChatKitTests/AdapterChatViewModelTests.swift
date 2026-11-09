@@ -318,6 +318,24 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testComposerMenuFollowsTheAdapter() {
+        let adapter = FakeMenuAdapter()
+        let chat = makeChat(adapter)
+        XCTAssertEqual(chat.composerMenu?.title, "Small", "published before connecting, so the composer starts with it")
+        chat.selectComposerMenuItem("large")
+        XCTAssertEqual(adapter.selected, "large")
+        XCTAssertEqual(chat.composerMenu?.title, "Large")
+        XCTAssertEqual(chat.composerMenu?.sections.first?.first { $0.isSelected }?.id, "large")
+
+        adapter.hidesMenu = true
+        adapter.onChange?()
+        XCTAssertNil(chat.composerMenu)
+    }
+
+    func testChatsWithoutAComposerMenuShowNone() {
+        XCTAssertNil(makeChat(FakeAdapter()).composerMenu)
+    }
+
     func testEditingSavesTheTextAndGivesBackWhatWasBeingWritten() async {
         let adapter = FakeEditingAdapter()
         adapter.pages = [[message(1), message(2, own: true)]]
@@ -787,6 +805,23 @@ private final class FakeEditingAdapter: FakeAdapter, ChatEditing {
         edits.append((messageId, text))
         guard appliesEdits else { return }
         replace(with: messages.map { $0.id == messageId ? ChatMessage(id: $0.id, sender: $0.sender, timestamp: $0.timestamp, text: text, isOwn: true, isEdited: true) : $0 })
+    }
+}
+
+@MainActor
+private final class FakeMenuAdapter: FakeAdapter, ChatComposerMenus {
+    private(set) var selected = "small"
+    var hidesMenu = false
+
+    var composerMenu: ChatComposerMenu? {
+        guard !hidesMenu else { return nil }
+        let items = [("small", "Small"), ("large", "Large")].map { ChatComposerMenuItem(id: $0.0, title: $0.1, isSelected: $0.0 == selected) }
+        return ChatComposerMenu(title: items.first { $0.isSelected }?.title ?? "", accessibilityLabel: "Size", sections: [items])
+    }
+
+    func selectComposerMenuItem(_ itemId: String) {
+        selected = itemId
+        onChange?()
     }
 }
 

@@ -597,6 +597,8 @@ public class ChatViewModel: ObservableObject {
 
     /// Names of the other users typing, in the order they started.
     @Published public internal(set) var typingNames: [String] = []
+    /// The chat's composer menu (`ChatComposerMenus`), such as the model an assistant uses; `nil` shows none.
+    @Published public internal(set) var composerMenu: ChatComposerMenu?
     /// User id → name, for showing `@` mentions by name.
     @Published public internal(set) var mentionNames: [String: String] = [:]
     /// Key → the network's custom emoji, shown as images in text and reactions; empty when it has none.
@@ -1036,6 +1038,9 @@ public class ChatViewModel: ObservableObject {
         case .unsupported: false
         }
     }
+
+    /// Chooses an item of the composer menu.
+    public func selectComposerMenuItem(_: String) {}
 
     /// Presses a `.press` button and returns the network's answer; a failure shows as `errorMessage`.
     public func press(_: ChatMessageButton, on _: ChatMessage) async -> ChatButtonAnswer? {

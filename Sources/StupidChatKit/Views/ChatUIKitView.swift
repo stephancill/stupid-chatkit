@@ -193,6 +193,13 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     private let holdingMicView = UIImageView(image: UIImage(systemName: "mic.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20)))
     private var recordingTimer: Timer?
     private let textRow = UIStackView()
+    /// The chat's composer menu (`ChatComposerMenus`), such as the model an assistant answers with: an icon at the end
+    /// of the text row.
+    private let composerMenuButton = UIButton(configuration: .plain())
+    /// Holds the button's place in the text row. The button itself sits outside the pill's glass, over this: a menu
+    /// grows out of the glass its button is in, and the whole pill would turn into the menu rather than the menu
+    /// opening over it.
+    private let composerMenuSlot = UIView()
     private var showsStickerPanel = false
     /// The last on-screen keyboard's height, which the sticker panel takes.
     private var keyboardHeight: CGFloat = 0
@@ -511,7 +518,8 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         holdToRecordGesture.allowableMovement = .greatestFiniteMagnitude
         holdToRecordGesture.delegate = self
 
-        for view in [textView, stickerButton, sendButton, voiceButton] {
+        configureComposerMenuButton(contentInsets: stickerConfiguration.contentInsets)
+        for view in [textView, composerMenuSlot, stickerButton, sendButton, voiceButton] {
             textRow.addArrangedSubview(view)
         }
         textRow.alignment = .bottom
@@ -544,6 +552,8 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         composer.translatesAutoresizingMaskIntoConstraints = false
         composer.addGestureRecognizer(holdToRecordGesture)
         view.addSubview(composer)
+        view.addSubview(composerMenuButton)
+        pinComposerMenuButton()
         // One drop target for the whole chat: the composer's own text drop would otherwise take drops over it, and
         // the message list has a drop interaction of its own that takes drops over the messages.
         for interaction in textView.interactions where interaction is UIDropInteraction {
@@ -578,6 +588,52 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             sendButton.widthAnchor.constraint(equalToConstant: minimumTextHeight),
             sendButton.heightAnchor.constraint(equalToConstant: minimumTextHeight),
         ])
+    }
+
+    private func configureComposerMenuButton(contentInsets: NSDirectionalEdgeInsets) {
+        var configuration = UIButton.Configuration.plain()
+        configuration.baseForegroundColor = .secondaryLabel
+        configuration.contentInsets = contentInsets
+        composerMenuButton.configuration = configuration
+        composerMenuButton.showsMenuAsPrimaryAction = true
+        composerMenuButton.translatesAutoresizingMaskIntoConstraints = false
+        composerMenuButton.isHidden = true
+        // Like the sticker button beside it: as tall as one line of text, so the icon centres on that line.
+        composerMenuSlot.heightAnchor.constraint(equalToConstant: minimumTextHeight).isActive = true
+        composerMenuSlot.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        composerMenuSlot.setContentHuggingPriority(.required, for: .horizontal)
+        composerMenuSlot.isHidden = true
+    }
+
+    /// Pins the button over its slot; called once the composer is in the view, since the two have no other common
+    /// ancestor.
+    private func pinComposerMenuButton() {
+        NSLayoutConstraint.activate([
+            composerMenuButton.leadingAnchor.constraint(equalTo: composerMenuSlot.leadingAnchor),
+            composerMenuButton.trailingAnchor.constraint(equalTo: composerMenuSlot.trailingAnchor),
+            composerMenuButton.topAnchor.constraint(equalTo: composerMenuSlot.topAnchor),
+            composerMenuButton.bottomAnchor.constraint(equalTo: composerMenuSlot.bottomAnchor),
+        ])
+    }
+
+    private func updateComposerMenu(_ menu: ChatComposerMenu?) {
+        if let menu {
+            composerMenuButton.configuration?.image = UIImage(systemName: menu.systemImage, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17))
+            composerMenuButton.accessibilityLabel = menu.accessibilityLabel
+            composerMenuButton.accessibilityValue = menu.title
+            composerMenuButton.menu = UIMenu(title: menu.title, children: menu.sections.map { section in
+                UIMenu(options: .displayInline, children: section.map { item in
+                    let action = UIAction(title: item.title, subtitle: item.subtitle, image: item.systemImage.flatMap { UIImage(systemName: $0) }) { [weak self] _ in
+                        self?.viewModel.selectComposerMenuItem(item.id)
+                    }
+                    action.state = item.isSelected ? .on : .off
+                    return action
+                })
+            })
+        }
+        let hides = menu == nil || editingMessage != nil
+        composerMenuSlot.isHidden = hides
+        composerMenuButton.isHidden = hides || voiceRecorder.isRecording
     }
 
     /// While searching, the input row gives way to where the shown match is among them, with arrows to older and newer
@@ -739,6 +795,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
                 .store(in: &cancellables)
         }
         viewModel.$typingNames.removeDuplicates().sink { [weak self] names in self?.updateTypingRow(names) }.store(in: &cancellables)
+        viewModel.$composerMenu.removeDuplicates().sink { [weak self] menu in self?.updateComposerMenu(menu) }.store(in: &cancellables)
         viewModel.$scrollToLatestRequest.dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async {
                 self?.isAnchoredToDivider = false
@@ -1065,6 +1122,10 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
                 inputPill.layoutIfNeeded()
             }
         }
+        // An edit changes only the text; recording hides the text row, slot and all.
+        let hidesComposerMenu = viewModel.composerMenu == nil || editingMessage != nil
+        composerMenuSlot.isHidden = hidesComposerMenu
+        composerMenuButton.isHidden = hidesComposerMenu || isRecording
         // An edit changes only the text.
         let attaches = canAttach && editingMessage == nil && !isRecording
         attachButton.isEnabled = attaches
