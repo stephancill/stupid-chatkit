@@ -458,6 +458,11 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         saveSnapshot()
     }
 
+    override public func prefetch() async throws {
+        try await adapter.loadNewest()
+        saveSnapshot()
+    }
+
     /// Without an error the app closed the connection itself (it went to the background) and reconnects when
     /// active again, so there is nothing to report.
     private func connectionLost(_ error: Error?) {

@@ -709,6 +709,10 @@ public class ChatViewModel: ObservableObject {
     /// Stops following the conversation when the chat closes.
     public func disconnect() {}
 
+    /// Loads the newest messages into the chat's snapshot without opening it, so it opens on them: nothing is
+    /// marked read, followed or polled. A chat without a snapshot does nothing.
+    public func prefetch() async throws {}
+
     public func loadEarlier() async {}
 
     public func loadLater() async {}

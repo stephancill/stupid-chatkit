@@ -39,6 +39,29 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertTrue(list.connections.allSatisfy { $0.error == nil })
     }
 
+    func testUnreadChatsLoadAheadOnceUntilTheyChange() async throws {
+        func unread(_ id: String, _ count: Int, minutesAgo: Double, muted: Bool = false) -> ChatSummary {
+            ChatSummary(id: id, network: .spotify, title: id, avatarURL: nil, preview: nil, timestamp: Date(timeIntervalSinceNow: -minutesAgo * 60),
+                        unreadCount: count, destination: .spotify(chatId: id), isMuted: muted)
+        }
+        let provider = FakeProvider(network: .spotify, page: .init(chats: [unread("new", 2, minutesAgo: 1), unread("read", 0, minutesAgo: 2), unread("muted", 3, minutesAgo: 3, muted: true)], archived: []))
+        let list = makeList([(provider, "spotify")])
+        var prefetched: [String] = []
+        list.prefetcher = { chat in PrefetchingChat { prefetched.append(chat.id) } }
+        await list.load()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(prefetched, ["spotify|new"], "only unread, unmuted chats")
+
+        await list.load()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(prefetched, ["spotify|new"], "an unchanged row doesn't load again")
+
+        provider.page = .init(chats: [unread("new", 3, minutesAgo: 0)], archived: [])
+        await list.load()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(prefetched, ["spotify|new", "spotify|new"], "a new message loads it again")
+    }
+
     func testTwoAccountsListTheSameChatApart() async {
         let shared = row("group", .telegram, minutesAgo: 1)
         let list = makeList([
@@ -221,6 +244,20 @@ final class ChatListViewModelTests: XCTestCase {
             unreadCount: 0,
             destination: destination ?? .spotify(chatId: id),
         )
+    }
+}
+
+@MainActor
+private final class PrefetchingChat: ChatViewModel {
+    private let onPrefetch: () -> Void
+
+    init(onPrefetch: @escaping () -> Void) {
+        self.onPrefetch = onPrefetch
+        super.init(network: .spotify, chatKey: "test", title: "Chat", subtitle: "", canReply: false, draftStore: ChatDraftStore(defaults: UserDefaults(suiteName: "PrefetchingChat-\(UUID().uuidString)")!))
+    }
+
+    override func prefetch() async throws {
+        onPrefetch()
     }
 }
 

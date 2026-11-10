@@ -204,6 +204,27 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         let unseenReactionCount: Int?
     }
 
+    /// Builds the chat for a row so its newest messages can load ahead of opening it (`ChatViewModel.prefetch()`);
+    /// nil for a chat that can't. Rows with unread messages load whenever the list changes, so a chat opens on
+    /// its new messages rather than waiting for them.
+    public var prefetcher: ((Summary) -> ChatViewModel?)? {
+        didSet { schedulePrefetch() }
+    }
+
+    /// How many unread chats load ahead after each change, newest first. Muted chats don't.
+    public static var prefetchLimit: Int {
+        5
+    }
+
+    /// A load ahead that hasn't finished in this time is given up, so one slow network doesn't hold the rest.
+    static var prefetchTimeout: Duration {
+        .seconds(20)
+    }
+    /// Each prefetched row's id and state, so a row loads again only once it has changed.
+    private var prefetched: Set<String> = []
+    private var prefetchTask: Task<Void, Never>?
+    private var prefetchesAgain = false
+
     /// The accounts' providers as of each load, since accounts come and go.
     private let sources: () -> [ChatListSource<Destination>]
     /// The last loaded list, shown at launch while it refreshes, so only the very first load waits.
@@ -378,6 +399,7 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     private func setChats(_ summaries: [Summary]) {
         chats = summaries.sorted { ($0.timestamp ?? .distantPast) > ($1.timestamp ?? .distantPast) }
         hasLoaded = true
+        schedulePrefetch()
         if let data = try? JSONEncoder().encode(chats) {
             try? data.write(to: cacheURL, options: .atomic)
         }
@@ -387,6 +409,39 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         archivedChats = summaries.sorted { ($0.timestamp ?? .distantPast) > ($1.timestamp ?? .distantPast) }
         if let data = try? JSONEncoder().encode(archivedChats) {
             try? data.write(to: archiveCacheURL, options: .atomic)
+        }
+    }
+
+    private func schedulePrefetch() {
+        guard prefetcher != nil else { return }
+        guard prefetchTask == nil else {
+            prefetchesAgain = true
+            return
+        }
+        prefetchTask = Task { [weak self] in
+            repeat {
+                self?.prefetchesAgain = false
+                await self?.prefetchUnread()
+            } while self?.prefetchesAgain == true
+            self?.prefetchTask = nil
+        }
+    }
+
+    /// One chat at a time, so the networks see what opening them one after another would send.
+    private func prefetchUnread() async {
+        let due = chats.filter { $0.unreadCount > 0 && !$0.isMuted }.prefix(Self.prefetchLimit)
+        for chat in due {
+            let key = "\(chat.id)|\(chat.timestamp?.timeIntervalSince1970 ?? 0)|\(chat.unreadCount)"
+            guard !prefetched.contains(key), let viewModel = prefetcher?(chat) else { continue }
+            // Tried once per state either way: a failure waits for the row to change rather than retrying.
+            prefetched.insert(key)
+            let load = Task { try await viewModel.prefetch() }
+            let timeout = Task {
+                try await Task.sleep(for: Self.prefetchTimeout)
+                load.cancel()
+            }
+            _ = await load.result
+            timeout.cancel()
         }
     }
 
