@@ -534,6 +534,8 @@ public class ChatViewModel: ObservableObject {
     @Published public internal(set) var reactionChoices: [String]?
     /// The user can read this chat but not post to it, such as a guest on a read-only server.
     @Published public internal(set) var isReadOnly = false
+    /// The adapter is doing work the user can stop (such as an assistant answering); the send button shows as stop.
+    @Published public internal(set) var isBusy = false
     /// Per-message reaction totals, keyed by message id.
     @Published public internal(set) var reactions: [String: [ChatReaction]] = [:]
     /// Kept per chat across visits; an edit's text isn't kept.
@@ -865,6 +867,9 @@ public class ChatViewModel: ObservableObject {
 
     /// Sends a sticker optimistically, as a reply when one is being written.
     public func send(sticker _: ChatSticker) async {}
+
+    /// Stops the work behind `isBusy`, from the composer's stop button; adapters that support stopping override this.
+    public func stopBusyWork() {}
 
     // MARK: Voice messages
 

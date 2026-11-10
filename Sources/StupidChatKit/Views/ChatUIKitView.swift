@@ -104,6 +104,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     private var state: ChatConnectionState = .connecting
     private var isSending = false
     private var isReadOnly = false
+    private var isBusy = false
     private var draft = ""
     private var attachments: [ChatAttachment] = []
     private var replyingTo: ChatMessage?
@@ -442,7 +443,8 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.delegate = self
         textView.onReturn = { [weak self] in
-            guard let self, sendButton.isEnabled else { return }
+            // While the agent works the button is a stop button; Return shouldn't trigger stop.
+            guard let self, !isBusy, sendButton.isEnabled else { return }
             send()
         }
         textView.onEscape = { [weak self] in self?.goBack() }
@@ -469,7 +471,10 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         sendConfiguration.contentInsets = .zero
         sendButton.configuration = sendConfiguration
         sendButton.accessibilityLabel = "Send"
-        sendButton.addAction(UIAction { [weak self] _ in self?.send() }, for: .primaryActionTriggered)
+        sendButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            if isBusy { viewModel.stopBusyWork() } else { send() }
+        }, for: .primaryActionTriggered)
 
         var stickerConfiguration = UIButton.Configuration.plain()
         stickerConfiguration.image = Self.stickerButtonImage(showsKeyboard: false)
@@ -806,6 +811,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             }
         }.store(in: &cancellables)
         viewModel.$isSending.sink { [weak self] in self?.isSending = $0; self?.refreshComposer() }.store(in: &cancellables)
+        viewModel.$isBusy.sink { [weak self] in self?.isBusy = $0; self?.refreshComposer() }.store(in: &cancellables)
         viewModel.$draft.sink { [weak self] in self?.draft = $0; self?.refreshComposer() }.store(in: &cancellables)
         viewModel.$attachments.sink { [weak self] in self?.attachments = $0; self?.rebuildAttachmentStrip(); self?.refreshComposer() }.store(in: &cancellables)
         viewModel.$errorMessage.sink { [weak self] _ in DispatchQueue.main.async { self?.refreshComposer() } }.store(in: &cancellables)
@@ -1121,15 +1127,16 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         attachButton.isEnabled = attaches
         attachButton.alpha = attaches ? 1 : 0.35
         stickerButton.isHidden = !viewModel.offersStickers || editingMessage != nil || isReadOnly
-        let sendImage = editingMessage == nil ? "arrow.up.circle.fill" : "checkmark.circle.fill"
+        // While the adapter is busy (an assistant answering) the send button becomes a stop button.
+        let sendImage = isBusy ? "stop.circle.fill" : (editingMessage == nil ? "arrow.up.circle.fill" : "checkmark.circle.fill")
         if sendButton.configuration?.image != UIImage(systemName: sendImage) {
             sendButton.configuration?.image = UIImage(systemName: sendImage)
-            sendButton.accessibilityLabel = editingMessage == nil ? "Send" : "Save"
+            sendButton.accessibilityLabel = isBusy ? "Stop" : (editingMessage == nil ? "Send" : "Save")
         }
 
         let hasContent = !attachments.isEmpty || forwarding != nil || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        // The send button appears only once there is something to send, like Messages.
-        let showsSend = hasContent || isSending
+        // The send button appears only once there is something to send, like Messages — or as a stop button while busy.
+        let showsSend = isBusy || hasContent || isSending
         let showsVoice = !showsSend && viewModel.offersVoiceNotes && editingMessage == nil && !isReadOnly
         let trailingMargin: CGFloat = showsSend || isRecording ? 4 : 14
         if sendButton.isHidden == showsSend || voiceButton.isHidden == showsVoice || pillStack.directionalLayoutMargins.trailing != trailingMargin {
@@ -1146,8 +1153,8 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             }
         }
         voiceButton.isEnabled = state == .connected
-        sendButton.isEnabled = state == .connected && !isSending && !isReadOnly && hasContent
-        sendButton.configuration?.showsActivityIndicator = isSending
+        sendButton.isEnabled = isBusy || (state == .connected && !isSending && !isReadOnly && hasContent)
+        sendButton.configuration?.showsActivityIndicator = isSending && !isBusy
         view.setNeedsLayout()
     }
 

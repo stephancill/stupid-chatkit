@@ -203,6 +203,17 @@ public protocol ChatReadOnlyAccess: ChatAdapter {
     var isReadOnly: Bool { get }
 }
 
+/// An adapter whose in-flight work the user can stop, such as an assistant still answering. While `isBusy`, the
+/// composer's send button becomes a stop button in place of send; tapping it calls `stop()`. The adapter calls
+/// `onChange` when `isBusy` changes.
+@MainActor
+public protocol ChatStoppable: ChatAdapter {
+    /// Read whenever the composer updates. While true the send button is a stop button.
+    var isBusy: Bool { get }
+    /// The user tapped stop.
+    func stop()
+}
+
 /// Reacting to messages.
 @MainActor
 public protocol ChatReactionSending: ChatAdapter {
@@ -547,6 +558,11 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
 
     // MARK: Composing
 
+    /// Stops the adapter's in-flight work, from the composer's stop button. No-op when the adapter isn't stoppable.
+    override public func stopBusyWork() {
+        (adapter as? any ChatStoppable)?.stop()
+    }
+
     /// Sends optimistically (see `sendOptimistically`), or saves the edit being made (`editOptimistically`); a
     /// command waits for the network instead, since it may post nothing.
     override public func send() async {
@@ -878,6 +894,10 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         }
         if let menus = adapter as? any ChatComposerMenus, composerMenu != menus.composerMenu {
             composerMenu = menus.composerMenu
+        }
+        let busy = (adapter as? any ChatStoppable)?.isBusy ?? false
+        if isBusy != busy {
+            isBusy = busy
         }
         if let unseen = adapter as? any ChatUnseenReactions, unseenReactionMessageIds != unseen.unseenReactionMessageIds {
             unseenReactionMessageIds = unseen.unseenReactionMessageIds

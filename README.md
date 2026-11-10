@@ -2,7 +2,7 @@
 
 The chat framework from [stupid social](https://github.com/stephancill/stupid-social) as a Swift package: one chat screen and Chats list for any number of networks, with an adapter per network. It knows no network itself.
 
-You get message lists with replies, reactions, mentions, custom emoji, stickers (Lottie and WebM, drawn without dependencies), voice messages, photos, videos and files; optimistic sending and editing; drafts; unread counting and the "New Messages" divider; debounced read markers; snapshots that open a chat with content; search; forwarding across networks; and a merged, cached Chats list. A network adds only what translates between it and the kit: a `ChatAdapter` for a conversation and a `ChatListProvider` for its rows. Optional abilities (editing, deleting, reactions, typing, mentions, stickers, voice, forwarding, a composer menu, …) are separate protocols, and the screen offers each exactly when an adapter adopts it.
+You get message lists with replies, reactions, mentions, custom emoji, stickers (Lottie and WebM, drawn without dependencies), voice messages, photos, videos and files; optimistic sending and editing; drafts; unread counting and the "New Messages" divider; debounced read markers; snapshots that open a chat with content; search; forwarding across networks; and a merged, cached Chats list. A network adds only what translates between it and the kit: a `ChatAdapter` for a conversation and a `ChatListProvider` for its rows. Optional abilities (editing, deleting, reactions, typing, mentions, stickers, voice, forwarding, a composer menu, stopping in-flight work, …) are separate protocols, and the screen offers each exactly when an adapter adopts it.
 
 iOS 18 or later. `docs/DESIGN.md` has the design.
 
