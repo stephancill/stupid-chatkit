@@ -554,12 +554,12 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             }
             return
         }
-        let attachment = adapter.acceptsAttachments ? attachment : nil
+        let attachments = adapter.acceptsAttachments ? attachments : []
         if let forward = forwarding {
             guard state == .connected, !isReadOnly else { return }
-            if !text.isEmpty || attachment != nil {
-                await sendOptimistically(text: text, attachment: attachment, replyToId: nil) { [adapter] in
-                    let id = try await adapter.send(ChatOutgoing(text: text, attachment: attachment, replyToId: nil))
+            if !text.isEmpty || !attachments.isEmpty {
+                await sendOptimistically(text: text, attachments: attachments, replyToId: nil) { [adapter] message in
+                    let id = try await adapter.send(message)
                     adapterDidChange()
                     return id
                 }
@@ -568,7 +568,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             await send(forward)
             return
         }
-        guard !text.isEmpty || attachment != nil, state == .connected else { return }
+        guard !text.isEmpty || !attachments.isEmpty, state == .connected else { return }
         let replyToId = canReply ? replyingTo?.id : nil
         if let commanding = adapter as? any ChatCommanding, commanding.isCommand(text) {
             isSending = true
@@ -577,15 +577,15 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             do {
                 try await commanding.sendCommand(text, replyToId: replyToId)
                 draft = ""
-                self.attachment = nil
+                self.attachments = []
                 replyingTo = nil
             } catch {
                 errorMessage = error.localizedDescription
             }
             return
         }
-        await sendOptimistically(text: text, attachment: attachment, replyToId: replyToId) { [adapter] in
-            let id = try await adapter.send(ChatOutgoing(text: text, attachment: attachment, replyToId: replyToId))
+        await sendOptimistically(text: text, attachments: attachments, replyToId: replyToId) { [adapter] message in
+            let id = try await adapter.send(message)
             adapterDidChange()
             return id
         }

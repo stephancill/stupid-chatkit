@@ -105,7 +105,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     private var isSending = false
     private var isReadOnly = false
     private var draft = ""
-    private var attachment: ChatAttachment?
+    private var attachments: [ChatAttachment] = []
     private var replyingTo: ChatMessage?
     private var forwarding: ChatForward?
     private var editingMessage: ChatMessage?
@@ -157,14 +157,14 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     private let reconnectButton = UIButton(type: .system)
     private let attachButton = UIButton(type: .system)
     private let inputPill = ChatGlass.make(cornerRadius: 22)
-    private let attachmentPreview = UIStackView()
+    /// The staged files, scrolling sideways inside the input pill above the text.
+    private let attachmentPreview = UIScrollView()
+    private let attachmentStrip = UIStackView()
     /// Shown over the chat while something it can take is dragged over it.
     private let dropHighlight = UIView()
     private let replyPreview = UIStackView()
     private let replyPreviewName = UILabel()
     private let replyPreviewText = UILabel()
-    private let attachmentThumbnail = UIImageView()
-    private let attachmentName = UILabel()
     private let textView = ChatComposerTextView()
     private let placeholderLabel = UILabel()
     private let sendButton = UIButton(configuration: .plain())
@@ -415,32 +415,22 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         attachGlass.setContentHuggingPriority(.required, for: .horizontal)
         attachGlass.isHidden = !viewModel.offersAttachments
 
-        // Staged attachment shown inside the input pill, above the text.
-        attachmentThumbnail.contentMode = .scaleAspectFill
-        attachmentThumbnail.clipsToBounds = true
-        attachmentThumbnail.layer.cornerRadius = 8
-        attachmentThumbnail.layer.cornerCurve = .continuous
-        attachmentThumbnail.tintColor = .secondaryLabel
-        attachmentThumbnail.isUserInteractionEnabled = true
-        attachmentThumbnail.addGestureRecognizer(ChatActionTapGesture { [weak self] in self?.showStagedImage() })
+        // Staged attachments shown inside the input pill, above the text.
+        attachmentStrip.axis = .horizontal
+        attachmentStrip.spacing = 8
+        attachmentStrip.alignment = .center
+        attachmentStrip.translatesAutoresizingMaskIntoConstraints = false
+        attachmentPreview.addSubview(attachmentStrip)
+        attachmentPreview.showsHorizontalScrollIndicator = false
+        attachmentPreview.alwaysBounceHorizontal = false
         NSLayoutConstraint.activate([
-            attachmentThumbnail.widthAnchor.constraint(equalToConstant: 48),
-            attachmentThumbnail.heightAnchor.constraint(equalToConstant: 48),
+            attachmentStrip.topAnchor.constraint(equalTo: attachmentPreview.contentLayoutGuide.topAnchor, constant: 6),
+            attachmentStrip.bottomAnchor.constraint(equalTo: attachmentPreview.contentLayoutGuide.bottomAnchor),
+            attachmentStrip.leadingAnchor.constraint(equalTo: attachmentPreview.contentLayoutGuide.leadingAnchor),
+            attachmentStrip.trailingAnchor.constraint(equalTo: attachmentPreview.contentLayoutGuide.trailingAnchor),
+            attachmentStrip.heightAnchor.constraint(equalTo: attachmentPreview.frameLayoutGuide.heightAnchor, constant: -6),
+            attachmentPreview.heightAnchor.constraint(equalToConstant: 62),
         ])
-        attachmentName.font = .preferredFont(forTextStyle: .footnote)
-        attachmentName.textColor = .secondaryLabel
-        attachmentName.lineBreakMode = .byTruncatingMiddle
-        let removeAttachment = UIButton(type: .system)
-        removeAttachment.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
-        removeAttachment.tintColor = .secondaryLabel
-        removeAttachment.accessibilityLabel = "Remove Attachment"
-        removeAttachment.setContentHuggingPriority(.required, for: .horizontal)
-        removeAttachment.addAction(UIAction { [weak self] _ in self?.viewModel.attachment = nil }, for: .primaryActionTriggered)
-        attachmentPreview.addArrangedSubview(attachmentThumbnail)
-        attachmentPreview.addArrangedSubview(attachmentName)
-        attachmentPreview.addArrangedSubview(removeAttachment)
-        attachmentPreview.spacing = 8
-        attachmentPreview.alignment = .center
         attachmentPreview.isHidden = true
 
         textView.font = .preferredFont(forTextStyle: .body)
@@ -460,7 +450,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             guard let self else { return false }
             return viewModel.canAttach && editingMessage == nil
         }
-        textView.onPasteImage = { [weak self] in self?.stageImage(from: $0) }
+        textView.onPasteImage = { [weak self] in self?.stageImages(from: [$0]) }
         textView.accessibilityLabel = "Message"
         textViewHeight = textView.heightAnchor.constraint(equalToConstant: minimumTextHeight)
         textViewHeight.isActive = true
@@ -817,7 +807,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         }.store(in: &cancellables)
         viewModel.$isSending.sink { [weak self] in self?.isSending = $0; self?.refreshComposer() }.store(in: &cancellables)
         viewModel.$draft.sink { [weak self] in self?.draft = $0; self?.refreshComposer() }.store(in: &cancellables)
-        viewModel.$attachment.sink { [weak self] in self?.attachment = $0; self?.refreshComposer() }.store(in: &cancellables)
+        viewModel.$attachments.sink { [weak self] in self?.attachments = $0; self?.rebuildAttachmentStrip(); self?.refreshComposer() }.store(in: &cancellables)
         viewModel.$errorMessage.sink { [weak self] _ in DispatchQueue.main.async { self?.refreshComposer() } }.store(in: &cancellables)
         viewModel.$replyingTo.sink { [weak self] in self?.replyingTo = $0; self?.refreshComposer() }.store(in: &cancellables)
         viewModel.$forwarding.sink { [weak self] in self?.forwarding = $0; self?.refreshComposer() }.store(in: &cancellables)
@@ -1127,7 +1117,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         composerMenuSlot.isHidden = hidesComposerMenu
         composerMenuButton.isHidden = hidesComposerMenu || isRecording
         // An edit changes only the text.
-        let attaches = canAttach && editingMessage == nil && !isRecording
+        let attaches = canAttach && editingMessage == nil && !isRecording && attachments.count < ChatViewModel.maxAttachments
         attachButton.isEnabled = attaches
         attachButton.alpha = attaches ? 1 : 0.35
         stickerButton.isHidden = !viewModel.offersStickers || editingMessage != nil || isReadOnly
@@ -1137,28 +1127,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             sendButton.accessibilityLabel = editingMessage == nil ? "Send" : "Save"
         }
 
-        if let attachment {
-            attachmentPreview.isHidden = false
-            if attachment.isImage, let image = UIImage(data: attachment.data) {
-                // The image speaks for itself; tapping it shows it full screen.
-                attachmentName.text = nil
-                attachmentThumbnail.image = image
-                attachmentThumbnail.contentMode = .scaleAspectFill
-                attachmentThumbnail.isAccessibilityElement = true
-                attachmentThumbnail.accessibilityLabel = "Attached Image"
-                attachmentThumbnail.accessibilityTraits = [.image, .button]
-            } else {
-                attachmentName.text = attachment.filename
-                attachmentThumbnail.image = UIImage(systemName: "doc.fill")
-                attachmentThumbnail.contentMode = .center
-                attachmentThumbnail.isAccessibilityElement = false
-            }
-        } else {
-            attachmentPreview.isHidden = true
-            attachmentThumbnail.image = nil
-        }
-
-        let hasContent = attachment != nil || forwarding != nil || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasContent = !attachments.isEmpty || forwarding != nil || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         // The send button appears only once there is something to send, like Messages.
         let showsSend = hasContent || isSending
         let showsVoice = !showsSend && viewModel.offersVoiceNotes && editingMessage == nil && !isReadOnly
@@ -1733,10 +1702,12 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         }
     }
 
+    /// Picks as many photos as the composer still has room for; they are added after what's already staged.
     private func presentPhotoPicker() {
         var configuration = PHPickerConfiguration()
         configuration.filter = .images
-        configuration.selectionLimit = 1
+        configuration.selectionLimit = max(1, ChatViewModel.maxAttachments - attachments.count)
+        configuration.selection = .ordered
         let picker = PHPickerViewController(configuration: configuration)
         picker.delegate = self
         present(picker, animated: true)
@@ -1744,39 +1715,131 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
 
     private func presentDocumentPicker() {
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.allowsMultipleSelection = true
         picker.delegate = self
         present(picker, animated: true)
     }
 
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
-        guard let provider = results.first?.itemProvider else { return }
-        stageImage(from: provider)
+        stageImages(from: results.map(\.itemProvider))
     }
 
-    private func stageImage(from provider: NSItemProvider) {
+    /// Loads the images together and stages them in the order given, up to the composer's limit.
+    private func stageImages(from providers: [NSItemProvider]) {
+        guard !providers.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            let loaded = await withTaskGroup(of: (Int, ChatAttachment?).self) { group in
+                for (index, provider) in providers.enumerated() {
+                    // NSItemProvider loads on its own queues; it's only handed over here.
+                    nonisolated(unsafe) let provider = provider
+                    group.addTask { await (index, Self.imageAttachment(from: provider)) }
+                }
+                var loaded = [ChatAttachment?](repeating: nil, count: providers.count)
+                for await (index, attachment) in group {
+                    loaded[index] = attachment
+                }
+                return loaded.compactMap(\.self)
+            }
+            self?.stage(loaded)
+        }
+    }
+
+    private func stage(_ files: [ChatAttachment]) {
+        let room = ChatViewModel.maxAttachments - viewModel.attachments.count
+        guard room > 0, !files.isEmpty else { return }
+        viewModel.attachments.append(contentsOf: files.prefix(room))
+    }
+
+    private nonisolated static func imageAttachment(from provider: NSItemProvider) async -> ChatAttachment? {
         let baseName = provider.suggestedName.map { ($0 as NSString).deletingPathExtension } ?? "photo"
         if provider.hasItemConformingToTypeIdentifier(UTType.gif.identifier) {
             // Keep GIFs as is so they stay animated.
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.gif.identifier) { [weak self] data, _ in
-                guard let data else { return }
-                Task { @MainActor in
-                    self?.viewModel.attachment = .init(data: data, mimeType: "image/gif", filename: "\(baseName).gif", isImage: true)
+            return await withCheckedContinuation { continuation in
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.gif.identifier) { data, _ in
+                    continuation.resume(returning: data.map { .init(data: $0, mimeType: "image/gif", filename: "\(baseName).gif", isImage: true) })
                 }
             }
-            return
         }
-        provider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
-            guard let image = object as? UIImage, let data = ChatImageEncoding.jpeg(from: image) else { return }
-            Task { @MainActor in
-                self?.viewModel.attachment = .init(data: data, mimeType: "image/jpeg", filename: "\(baseName).jpg", isImage: true)
+        return await withCheckedContinuation { continuation in
+            provider.loadObject(ofClass: UIImage.self) { object, _ in
+                let data = (object as? UIImage).flatMap { ChatImageEncoding.jpeg(from: $0) }
+                continuation.resume(returning: data.map { .init(data: $0, mimeType: "image/jpeg", filename: "\(baseName).jpg", isImage: true) })
             }
         }
     }
 
-    /// Shows the staged image full screen, from a temporary copy since the viewer reads (and saves) a file.
-    private func showStagedImage() {
-        guard let attachment, attachment.isImage, let image = attachmentThumbnail.image else { return }
+    /// One tile per staged file: an image as a thumbnail that opens full screen, a file as its name, each with a
+    /// remove button.
+    private func rebuildAttachmentStrip() {
+        attachmentStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        attachmentPreview.isHidden = attachments.isEmpty
+        for (index, attachment) in attachments.enumerated() {
+            let tile = UIView()
+            tile.translatesAutoresizingMaskIntoConstraints = false
+            let content: UIView
+            if attachment.isImage, let image = UIImage(data: attachment.data) {
+                let thumbnail = UIImageView(image: image)
+                thumbnail.contentMode = .scaleAspectFill
+                thumbnail.clipsToBounds = true
+                thumbnail.layer.cornerRadius = 8
+                thumbnail.layer.cornerCurve = .continuous
+                thumbnail.isUserInteractionEnabled = true
+                thumbnail.isAccessibilityElement = true
+                thumbnail.accessibilityLabel = "Attached Image"
+                thumbnail.accessibilityTraits = [.image, .button]
+                thumbnail.addGestureRecognizer(ChatActionTapGesture { [weak self] in self?.showStagedImage(attachment, image: image) })
+                thumbnail.widthAnchor.constraint(equalToConstant: 52).isActive = true
+                content = thumbnail
+            } else {
+                let icon = UIImageView(image: UIImage(systemName: "doc.fill"))
+                icon.tintColor = .secondaryLabel
+                icon.setContentHuggingPriority(.required, for: .horizontal)
+                let name = UILabel()
+                name.text = attachment.filename
+                name.font = .preferredFont(forTextStyle: .footnote)
+                name.textColor = .secondaryLabel
+                name.lineBreakMode = .byTruncatingMiddle
+                let row = UIStackView(arrangedSubviews: [icon, name])
+                row.spacing = 6
+                row.alignment = .center
+                row.isLayoutMarginsRelativeArrangement = true
+                row.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 18)
+                row.backgroundColor = .tertiarySystemFill
+                row.layer.cornerRadius = 8
+                row.layer.cornerCurve = .continuous
+                row.widthAnchor.constraint(lessThanOrEqualToConstant: attachments.count == 1 ? 260 : 160).isActive = true
+                content = row
+            }
+            content.translatesAutoresizingMaskIntoConstraints = false
+            tile.addSubview(content)
+            let remove = UIButton(type: .system)
+            remove.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+            remove.tintColor = .secondaryLabel
+            remove.accessibilityLabel = "Remove Attachment"
+            remove.translatesAutoresizingMaskIntoConstraints = false
+            remove.addAction(UIAction { [weak self] _ in
+                guard let self, viewModel.attachments.indices.contains(index) else { return }
+                viewModel.attachments.remove(at: index)
+            }, for: .primaryActionTriggered)
+            tile.addSubview(remove)
+            NSLayoutConstraint.activate([
+                content.topAnchor.constraint(equalTo: tile.topAnchor),
+                content.leadingAnchor.constraint(equalTo: tile.leadingAnchor),
+                content.bottomAnchor.constraint(equalTo: tile.bottomAnchor),
+                content.trailingAnchor.constraint(equalTo: tile.trailingAnchor, constant: -6),
+                content.heightAnchor.constraint(equalToConstant: 52),
+                remove.centerXAnchor.constraint(equalTo: content.trailingAnchor, constant: -2),
+                remove.centerYAnchor.constraint(equalTo: content.topAnchor, constant: 2),
+                remove.widthAnchor.constraint(equalToConstant: 24),
+                remove.heightAnchor.constraint(equalToConstant: 24),
+            ])
+            attachmentStrip.addArrangedSubview(tile)
+        }
+    }
+
+    /// Shows a staged image full screen, from a temporary copy since the viewer reads (and saves) a file.
+    private func showStagedImage(_ attachment: ChatAttachment, image: UIImage) {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(attachment.filename)
         do {
             try attachment.data.write(to: url)
@@ -1788,16 +1851,17 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     }
 
     func documentPicker(_: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let url = urls.first else { return }
         do {
-            let data = try Data(contentsOf: url)
-            let type = UTType(filenameExtension: url.pathExtension)
-            viewModel.attachment = .init(
-                data: data,
-                mimeType: type?.preferredMIMEType ?? "application/octet-stream",
-                filename: url.lastPathComponent,
-                isImage: type?.conforms(to: .image) ?? false,
-            )
+            let files = try urls.map { url in
+                let type = UTType(filenameExtension: url.pathExtension)
+                return try ChatAttachment(
+                    data: Data(contentsOf: url),
+                    mimeType: type?.preferredMIMEType ?? "application/octet-stream",
+                    filename: url.lastPathComponent,
+                    isImage: type?.conforms(to: .image) ?? false,
+                )
+            }
+            stage(files)
         } catch {
             viewModel.errorMessage = error.localizedDescription
         }
@@ -1848,7 +1912,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     }
 
     private func dropsImage(_ session: UIDropSession) -> Bool {
-        viewModel.canAttach && editingMessage == nil && session.items.count == 1 && session.hasItemsConforming(toTypeIdentifiers: [UTType.image.identifier])
+        viewModel.canAttach && editingMessage == nil && session.items.count <= ChatViewModel.maxAttachments - attachments.count && session.hasItemsConforming(toTypeIdentifiers: [UTType.image.identifier])
     }
 
     /// An image dropped anywhere on the chat is staged like one picked from Photos; text goes into the composer,
@@ -1911,8 +1975,8 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
 
     private func performDrop(_ session: UIDropSession) {
         setDropHighlighted(false)
-        if dropsImage(session), let provider = session.items.first?.itemProvider {
-            stageImage(from: provider)
+        if dropsImage(session) {
+            stageImages(from: session.items.map(\.itemProvider))
             return
         }
         _ = session.loadObjects(ofClass: String.self) { [weak self] strings in

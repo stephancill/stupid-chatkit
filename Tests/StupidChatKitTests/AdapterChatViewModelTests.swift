@@ -87,6 +87,42 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testSeveralFilesSendInOrderWithTheTextAndReplyOnTheFirst() async {
+        let adapter = FakeAdapter()
+        adapter.acceptsAttachments = true
+        adapter.pages = [[message(1)]]
+        let chat = makeChat(adapter)
+        await chat.connect()
+        chat.draft = "Look"
+        chat.startReply(to: chat.messages[0])
+        chat.attachments = (1 ... 3).map(file)
+        await chat.send()
+        XCTAssertEqual(adapter.sent.map(\.attachment?.filename), ["1.txt", "2.txt", "3.txt"])
+        XCTAssertEqual(adapter.sent.map(\.text), ["Look", "", ""])
+        XCTAssertEqual(adapter.sent.map(\.replyToId), ["1", nil, nil])
+        XCTAssertTrue(chat.attachments.isEmpty)
+        XCTAssertFalse(chat.messages.contains(where: \.isSending))
+        chat.disconnect()
+    }
+
+    func testAFailedFileStopsTheRestAndPutsThemBack() async {
+        let adapter = FakeAdapter()
+        adapter.acceptsAttachments = true
+        adapter.failsSendAfter = 1
+        adapter.pages = [[message(1)]]
+        let chat = makeChat(adapter)
+        await chat.connect()
+        chat.draft = "Look"
+        chat.attachments = (1 ... 3).map(file)
+        await chat.send()
+        XCTAssertEqual(adapter.sent.map(\.attachment?.filename), ["1.txt"])
+        XCTAssertEqual(chat.attachments.map(\.filename), ["2.txt", "3.txt"])
+        XCTAssertEqual(chat.draft, "", "the text went with the first")
+        XCTAssertNotNil(chat.errorMessage)
+        XCTAssertFalse(chat.messages.contains(where: \.isSending))
+        chat.disconnect()
+    }
+
     func testMarkingReadMovesTheCountAtOnceAndSendsOnce() async throws {
         let adapter = FakeAdapter()
         adapter.pages = [[message(1), message(2), message(3)]]
@@ -692,7 +728,13 @@ private class FakeAdapter: ChatAdapter {
         self.messages = messages
     }
 
+    /// Sends after this many succeed fail.
+    var failsSendAfter: Int?
+
     func send(_ message: ChatOutgoing) async throws -> String? {
+        if let failsSendAfter, sent.count >= failsSendAfter {
+            throw URLError(.notConnectedToInternet)
+        }
         sent.append(message)
         let id = "sent-\(sent.count)"
         messages.append(ChatMessage(id: id, sender: ChatUser(id: "you", name: "You", avatarURL: nil), timestamp: Date(), text: message.text, isOwn: true))
@@ -958,4 +1000,8 @@ private final class FakeUnseenReactionsAdapter: FakeAdapter, ChatUnseenReactions
             pending = []
         }
     }
+}
+
+private func file(_ n: Int) -> ChatAttachment {
+    ChatAttachment(data: Data("\(n)".utf8), mimeType: "text/plain", filename: "\(n).txt", isImage: false)
 }
