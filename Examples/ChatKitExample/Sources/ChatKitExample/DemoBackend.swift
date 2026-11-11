@@ -79,6 +79,26 @@ enum DemoBackend {
                             picture(1011, 960, 1280), picture(1043, 960, 1280), picture(1036, 960, 1280), picture(1039, 960, 1280),
                         ]),
                     ]),
+                    message("w6b", theo, now, minutes: 66, nil, embeds: [
+                        .post(ChatPost(
+                            authorName: "Seacliff Cabins",
+                            authorHandle: "@seacliffcabins",
+                            authorAvatarURL: photo(424, 200, 200),
+                            isVerified: true,
+                            date: now.addingTimeInterval(-3 * 3600),
+                            text: "Storm watch this weekend 🌧️ Check-in moves to the lodge, and the cliff path closes at dusk. Boots strongly advised.",
+                            media: [picture(1015, 1280, 853)],
+                            link: URL(string: "https://pinboard.social/seacliffcabins/posts/88"),
+                            quoted: ChatPost(
+                                authorName: "Nova",
+                                authorHandle: "@nova",
+                                authorAvatarURL: nova.avatarURL,
+                                text: "still water, no signal, best morning of the summer",
+                                media: [picture(1011, 960, 1280)],
+                                link: URL(string: "https://pinboard.social/nova/posts/1182"),
+                            ),
+                        )),
+                    ]),
                     message("w7", theo, now, minutes: 60, nil, embeds: [
                         .file(url: URL(string: "https://seacliffcabins.com/files/packing-list.pdf")!, filename: "packing list.pdf", subtitle: "13 KB", thumbnailURL: nil),
                     ]),

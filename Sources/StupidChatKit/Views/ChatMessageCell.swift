@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 
 /// A day's date in a small glass capsule, heading its messages. Headers pin to the top while their day scrolls
@@ -1305,6 +1306,8 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
             return linkCard(title: title, subtitle: subtitle, systemImage: "link", imageURL: nil, link: link, media: mediaPager(media, index: index))
         case let .message(title, text, link):
             return messageCard(title: title, text: text, link: link, index: index)
+        case let .post(post):
+            return postCard(post, index: index)
         case let .video(url, posterURL, aspectRatio, duration, isGIF):
             let video = ChatVideoView(url: url, duration: duration, isGIF: isGIF)
             Self.sizeAsMedia(video, aspectRatio: aspectRatio)
@@ -1442,6 +1445,186 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         quote.accessibilityHint = isExpanded ? "Shows less" : "Shows the whole message"
         return quote
     }
+
+    /// A post, drawn as its network shows one in a frame: the author's picture, name, badge, handle and time over
+    /// the text (twelve lines until tapped open), its media to page through, and the post it quotes in a frame of
+    /// its own. The author opens the post.
+    private func postCard(_ post: ChatPost, index: Int) -> UIView {
+        let isExpanded = actions.isEmbedExpanded(index)
+        var rows: [UIView] = [postHeader(post, compact: false)]
+        if !post.text.isEmpty {
+            let text = postText(post.text, lines: isExpanded ? 0 : 12)
+            text.addGestureRecognizer(ChatActionTapGesture { [weak self] in self?.actions.toggleEmbed(index) })
+            text.accessibilityHint = isExpanded ? "Shows less" : "Shows the whole post"
+            rows.append(text)
+        }
+        if let media = mediaPager(post.media, index: index) {
+            rows.append(media)
+        }
+        if let quoted = post.quoted {
+            rows.append(quotedPost(quoted, index: index))
+        }
+        return postFrame(rows, cornerRadius: 12)
+    }
+
+    /// The quoted post: a smaller header, four lines of text and its first photo or video beside them.
+    private func quotedPost(_ post: ChatPost, index: Int) -> UIView {
+        var rows: [UIView] = [postHeader(post, compact: true)]
+        let text = postText(post.text.isEmpty ? Self.mediaSummary(post.media) : post.text, lines: 4)
+        if let first = post.media.first {
+            let thumbnail = makeView(for: first, index: index)
+            thumbnail.constraints.filter { $0.firstItem === thumbnail && [.width, .height].contains($0.firstAttribute) }.forEach { $0.isActive = false }
+            thumbnail.layer.cornerRadius = 6
+            thumbnail.clipsToBounds = true
+            thumbnail.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                thumbnail.widthAnchor.constraint(equalToConstant: 56),
+                thumbnail.heightAnchor.constraint(equalToConstant: 56),
+            ])
+            let column = UIStackView(arrangedSubviews: [thumbnail, UIView()])
+            column.axis = .vertical
+            let row = UIStackView(arrangedSubviews: [text, column])
+            row.spacing = 8
+            row.alignment = .top
+            rows.append(row)
+        } else {
+            rows.append(text)
+        }
+        let frame = postFrame(rows, cornerRadius: 8)
+        if let link = post.link {
+            frame.accessibilityTraits = .link
+            frame.addGestureRecognizer(ChatLinkTapGesture(link: link))
+        }
+        return frame
+    }
+
+    private func postText(_ text: String, lines: Int) -> UILabel {
+        let label = UILabel()
+        label.text = text
+        label.font = .preferredFont(forTextStyle: .subheadline)
+        label.adjustsFontForContentSizeCategory = true
+        label.textColor = isOwn ? .white : .label
+        label.numberOfLines = lines
+        label.isUserInteractionEnabled = true
+        return label
+    }
+
+    /// The author's picture beside their name, verified badge, handle and the post's time; compact puts them on one
+    /// line beside a small picture, for a quoted post.
+    private func postHeader(_ post: ChatPost, compact: Bool) -> UIView {
+        let redacted = ChatRedaction.isEnabled
+        let name = ChatRedaction.name(post.authorName, enabled: redacted)
+        let avatarSize: CGFloat = compact ? 20 : 36
+        let avatar = ChatAvatarView()
+        avatar.configure(name: name, color: ChatUserColor.color(for: post.authorHandle ?? post.authorName), url: redacted ? nil : post.authorAvatarURL)
+        avatar.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            avatar.widthAnchor.constraint(equalToConstant: avatarSize),
+            avatar.heightAnchor.constraint(equalToConstant: avatarSize),
+        ])
+
+        let nameLabel = UILabel()
+        nameLabel.text = name
+        nameLabel.font = UIFont.preferredFont(forTextStyle: compact ? .footnote : .subheadline).withWeight(.semibold)
+        nameLabel.textColor = isOwn ? .white : .label
+        nameLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        let badge = UIImageView(image: UIImage(systemName: "checkmark.seal.fill", withConfiguration: UIImage.SymbolConfiguration(textStyle: .caption1, scale: .medium)))
+        badge.tintColor = isOwn ? .white : .systemBlue
+        badge.isHidden = !post.isVerified
+        badge.setContentHuggingPriority(.required, for: .horizontal)
+        badge.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let detail = [redacted ? nil : post.authorHandle, post.date.map { Self.postDate($0) }].compactMap(\.self).joined(separator: " · ")
+        let detailLabel = UILabel()
+        detailLabel.text = detail
+        detailLabel.font = .preferredFont(forTextStyle: .footnote)
+        detailLabel.textColor = isOwn ? UIColor.white.withAlphaComponent(0.8) : .secondaryLabel
+        detailLabel.isHidden = detail.isEmpty
+        detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let labels: UIStackView
+        if compact {
+            labels = UIStackView(arrangedSubviews: [nameLabel, badge, detailLabel, UIView()])
+            labels.spacing = 4
+            labels.alignment = .center
+        } else {
+            let nameRow = UIStackView(arrangedSubviews: [nameLabel, badge, UIView()])
+            nameRow.spacing = 3
+            nameRow.alignment = .center
+            // The network's icon at the end of the top line, in the card's corner.
+            if let network = post.network, let icon = ChatKit.networkIcon {
+                let size: CGFloat = 18
+                let iconView = UIHostingConfiguration { icon(network, size) }.margins(.all, 0).makeContentView()
+                iconView.backgroundColor = .clear
+                iconView.isAccessibilityElement = false
+                iconView.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    iconView.widthAnchor.constraint(equalToConstant: size),
+                    iconView.heightAnchor.constraint(equalToConstant: size),
+                ])
+                nameRow.addArrangedSubview(iconView)
+            }
+            labels = UIStackView(arrangedSubviews: [nameRow, detailLabel])
+            labels.axis = .vertical
+            labels.alignment = .fill
+        }
+        let row = UIStackView(arrangedSubviews: [avatar, labels])
+        row.spacing = compact ? 6 : 8
+        row.alignment = .center
+        row.isAccessibilityElement = true
+        row.accessibilityLabel = [name, post.isVerified ? "Verified" : nil, detail.isEmpty ? nil : detail].compactMap(\.self).joined(separator: ", ")
+        if !compact, let link = post.link {
+            row.accessibilityTraits = .link
+            row.addGestureRecognizer(ChatLinkTapGesture(link: link))
+        }
+        return row
+    }
+
+    private func postFrame(_ rows: [UIView], cornerRadius: CGFloat) -> UIStackView {
+        let stack = UIStackView(arrangedSubviews: rows)
+        stack.axis = .vertical
+        stack.spacing = 8
+        stack.alignment = .fill
+        stack.isLayoutMarginsRelativeArrangement = true
+        stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10)
+        stack.layer.cornerRadius = cornerRadius
+        stack.layer.cornerCurve = .continuous
+        stack.layer.borderWidth = 1
+        stack.layer.borderColor = (isOwn ? UIColor.white.withAlphaComponent(0.35) : UIColor.separator).resolvedColor(with: traitCollection).cgColor
+        stack.clipsToBounds = true
+        return stack
+    }
+
+    /// "Photo", "2 photos", "Video": what a quoted post without text shows.
+    private static func mediaSummary(_ media: [ChatEmbed]) -> String {
+        let videos = media.count(where: { if case .video = $0 { true } else { false } })
+        let photos = media.count - videos
+        if videos == 0 { return photos == 1 ? "Photo" : "\(photos) photos" }
+        if photos == 0 { return videos == 1 ? "Video" : "\(videos) videos" }
+        return "\(media.count) items"
+    }
+
+    /// A post's time as networks show it: "now", "5m" and "3h" within a day, then "Mar 3", and "Mar 3, 2024" from
+    /// another year.
+    static func postDate(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        let seconds = now.timeIntervalSince(date)
+        if seconds < 60 { return "now" }
+        if seconds < 3600 { return "\(Int(seconds / 60))m" }
+        if seconds < 86400 { return "\(Int(seconds / 3600))h" }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        return sameYear ? postDayFormatter.string(from: date) : postYearFormatter.string(from: date)
+    }
+
+    private static let postDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
+        return formatter
+    }()
+
+    private static let postYearFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMdyyyy")
+        return formatter
+    }()
 
     private func loadImage(_ url: URL, into imageView: UIImageView) {
         if let shown = previousImages[url] ?? ChatMediaImageCache.shared.image(for: url) {

@@ -133,6 +133,67 @@ public enum ChatEmbed: Hashable, Sendable {
     /// across it to page through in place. `media` holds `.image` (with `opensViewer`) and `.video` embeds, in order;
     /// tapping one opens it as in a message, and tapping the title opens `link`.
     case linkPreview(title: String, subtitle: String?, link: URL?, media: [ChatEmbed])
+    /// A post from a social network, drawn as a post rather than a link: its author, the text in full, its media and
+    /// the post it quotes.
+    case post(ChatPost)
+}
+
+/// A social network post shared into a chat (`ChatEmbed.post`).
+public struct ChatPost: Hashable, Sendable {
+    public let authorName: String
+    /// Shown after the name as written, such as "@alice".
+    public let authorHandle: String?
+    public let authorAvatarURL: URL?
+    /// Draws the network's verified badge beside the name.
+    public let isVerified: Bool
+    public let date: Date?
+    public let text: String
+    /// `.image` (with `opensViewer`) and `.video` embeds, paged through in place.
+    public let media: [ChatEmbed]
+    /// What tapping the author opens: the post on its network.
+    public let link: URL?
+    /// The network the post is from, whose icon (`ChatKit.networkIcon`) sits in the card's top corner.
+    public let network: ChatNetwork?
+    /// Held in an array, since a struct can't contain itself.
+    private let quotedPosts: [ChatPost]
+
+    /// The post this one quotes, drawn inside it.
+    public var quoted: ChatPost? {
+        quotedPosts.first
+    }
+
+    public init(
+        authorName: String,
+        authorHandle: String? = nil,
+        authorAvatarURL: URL? = nil,
+        isVerified: Bool = false,
+        date: Date? = nil,
+        text: String,
+        media: [ChatEmbed] = [],
+        link: URL? = nil,
+        network: ChatNetwork? = nil,
+        quoted: ChatPost? = nil,
+    ) {
+        self.network = network
+        self.authorName = authorName
+        self.authorHandle = authorHandle
+        self.authorAvatarURL = authorAvatarURL
+        self.isVerified = isVerified
+        self.date = date
+        self.text = text
+        self.media = media
+        self.link = link
+        quotedPosts = quoted.map { [$0] } ?? []
+    }
+
+    /// "Post by Ada", for one-line previews.
+    var summary: String {
+        "Post by \(authorName)"
+    }
+
+    var searchableParts: [String] {
+        [authorName, authorHandle ?? "", text] + (quoted?.searchableParts ?? [])
+    }
 }
 
 /// A custom emoji a network marks by position over fallback text, such as a Telegram custom emoji entity, rather
@@ -278,6 +339,7 @@ public struct ChatMessage: Hashable, Identifiable, Sendable {
             case let .sticker(sticker): return sticker.label
             case let .card(title, _, _, _, _), let .message(title, _, _), let .linkPreview(title, _, _, _): return title
             case let .audio(_, title, _, _, _, _): return title
+            case let .post(post): return post.summary
             case let .pending(title): return title
             }
         }
@@ -1268,6 +1330,8 @@ public class ChatViewModel: ObservableObject {
         switch message.embeds.first {
         case let .audio(_, title, _, _, _, _), let .card(title, _, _, _, _), let .message(title, _, _), let .linkPreview(title, _, _, _):
             return "Shared “\(title)”"
+        case let .post(post):
+            return "Shared a post by \(post.authorName)"
         case .image:
             return "Photo"
         case let .video(_, _, _, _, isGIF):
@@ -1489,6 +1553,7 @@ public class ChatViewModel: ObservableObject {
             case let .card(title, subtitle, _, _, _), let .linkPreview(title, subtitle, _, _): parts += [title, subtitle ?? ""]
             case let .audio(_, title, subtitle, _, _, _): parts += [title, subtitle ?? ""]
             case let .message(title, text, _): parts += [title, text]
+            case let .post(post): parts += post.searchableParts
             case let .image(_, _, alt, _, _): parts.append(alt ?? "")
             case let .file(_, filename, subtitle, _): parts += [filename, subtitle ?? ""]
             case let .sticker(sticker): parts.append(sticker.alt ?? "")

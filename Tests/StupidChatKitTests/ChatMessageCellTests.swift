@@ -61,4 +61,41 @@ final class ChatMessageCellTests: XCTestCase {
         let textHeight = body.boundingRect(with: CGSize(width: width * 0.8, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height
         XCTAssertGreaterThanOrEqual(fittedHeight(of: cell, width: width), ceil(textHeight))
     }
+
+    /// A post sizes its cell, shows twelve lines of a long text until opened, and its quote adds to it.
+    func testPostSizesTheCellAndOpensToItsWholeText() {
+        let width: CGFloat = 390
+        let long = String(repeating: "A long post that runs on for a while. ", count: 30)
+        func height(_ post: ChatPost, expanded: Bool) -> CGFloat {
+            let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: width, height: 44))
+            var actions = ChatMessageCell.Actions()
+            actions.isEmbedExpanded = { _ in expanded }
+            cell.configure(
+                message: ChatMessage(id: "p", sender: ChatUser(id: "ada", name: "Ada", avatarURL: nil), timestamp: Date(), text: nil, embeds: [.post(post)], isOwn: false),
+                layout: ChatBubbleLayout(isOwn: false, isSystem: false, showsName: false, showsAvatar: true, startsGroup: true),
+                reply: nil, avatarURL: nil, body: nil, embeds: [.post(post)], reactions: [], actions: actions, availableWidth: width,
+            )
+            return fittedHeight(of: cell, width: width)
+        }
+        let short = ChatPost(authorName: "Ada", authorHandle: "@ada", isVerified: true, date: Date(), text: "Hello")
+        let collapsed = height(ChatPost(authorName: "Ada", text: long), expanded: false)
+        let expanded = height(ChatPost(authorName: "Ada", text: long), expanded: true)
+        let quoting = height(ChatPost(authorName: "Ada", text: "Hello", quoted: ChatPost(authorName: "Grace", text: "Quoted")), expanded: false)
+        let lineHeight = UIFont.preferredFont(forTextStyle: .subheadline).lineHeight
+        XCTAssertGreaterThan(height(short, expanded: false), 36 + 20, "the header and the frame's margins")
+        XCTAssertGreaterThanOrEqual(collapsed, 12 * lineHeight)
+        XCTAssertGreaterThan(expanded, collapsed + lineHeight)
+        XCTAssertGreaterThan(quoting, height(short, expanded: false) + lineHeight)
+    }
+
+    func testPostDateReadsLikeANetworks() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        XCTAssertEqual(ChatMessageCell.postDate(now.addingTimeInterval(-30), now: now, calendar: calendar), "now")
+        XCTAssertEqual(ChatMessageCell.postDate(now.addingTimeInterval(-5 * 60), now: now, calendar: calendar), "5m")
+        XCTAssertEqual(ChatMessageCell.postDate(now.addingTimeInterval(-3 * 3600), now: now, calendar: calendar), "3h")
+        XCTAssertFalse(ChatMessageCell.postDate(now.addingTimeInterval(-3 * 86400), now: now, calendar: calendar).contains("20"), "no year within this year")
+        XCTAssertTrue(ChatMessageCell.postDate(now.addingTimeInterval(-400 * 86400), now: now, calendar: calendar).contains("2025"))
+    }
 }

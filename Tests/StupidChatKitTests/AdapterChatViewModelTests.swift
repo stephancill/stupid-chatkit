@@ -319,6 +319,21 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testSharedPostIsFoundByItsAuthorTextAndQuoteAndPreviewedByAuthor() async {
+        let quoted = ChatPost(authorName: "Grace", authorHandle: "@grace", text: "Nanoseconds are short")
+        let post = ChatPost(authorName: "Ada", authorHandle: "@ada", text: "Look at this", quoted: quoted)
+        let shared = ChatMessage(id: "1", sender: ChatUser(id: "bo", name: "Bo", avatarURL: nil), timestamp: Date(timeIntervalSince1970: 1), text: nil, embeds: [.post(post)], isOwn: false)
+        let adapter = FakeAdapter()
+        adapter.pages = [[shared, said(2, "nice")]]
+        let chat = makeChat(adapter)
+        await chat.connect()
+        for query in ["@ada", "look at", "nanoseconds", "grace"] {
+            XCTAssertEqual(chat.searchableText(of: shared).localizedCaseInsensitiveContains(query), true, query)
+        }
+        XCTAssertEqual(shared.previewText, "Post by Ada")
+        chat.disconnect()
+    }
+
     func testSearchPagesBackForOlderMatches() async {
         let adapter = FakeUnseenReactionsAdapter()
         adapter.pages = [[said(4, "lunch?"), said(5, "ok")]]
