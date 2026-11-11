@@ -1,0 +1,11 @@
+{
+  "devices": { "iphone": { "raw": "raw/iphone", "out": "iphone" } },
+  "slides": [
+    { "raw": "01-chats", "headline": "chat ui for<br>any <span id=\"m\">backend</span>", "subtitle": "write one adapter. the kit does the rest", "doodles": "under('m'); star(); arrow();" },
+    { "raw": "02-climbing", "headline": "replies,<br>mentions,<br><span id=\"m\">typing</span>", "subtitle": "group chats that read like conversations", "doodles": "under('m'); star(); arrow();", "align": "right" },
+    { "raw": "04-react", "headline": "react like<br>you <span id=\"m\">mean it</span>", "subtitle": "long press, pick an emoji, done", "doodles": "under('m'); star(); arrow();", "position": "bottom" },
+    { "raw": "03-emoji", "headline": "bring your<br>own <span id=\"m\">emoji</span>", "subtitle": "type : to find them, in text and reactions", "doodles": "under('m'); star(); arrow();", "align": "right", "position": "bottom" },
+    { "raw": "08-coast-middle", "headline": "photos, voice<br>notes, <span id=\"m\">the lot</span>", "subtitle": "video, link previews and files built in", "doodles": "under('m'); star(); arrow();" },
+    { "raw": "09-unread", "headline": "pick up where<br>you <span id=\"m\">left off</span>", "subtitle": "new messages divider, read receipts, drafts", "doodles": "under('m'); star(); arrow();", "align": "right", "position": "bottom" }
+  ]
+}

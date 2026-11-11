@@ -6,6 +6,24 @@ You get message lists with replies, reactions, mentions, custom emoji, stickers 
 
 iOS 18 or later. `docs/DESIGN.md` has the design.
 
+<p>
+  <img src="docs/screenshots/iphone/01-chats.png" width="32%" alt="Chats list on one made-up backend">
+  <img src="docs/screenshots/iphone/02-climbing.png" width="32%" alt="Group chat with replies, mentions, reactions and typing">
+  <img src="docs/screenshots/iphone/03-react.png" width="32%" alt="Long-press menu with quick reactions">
+  <img src="docs/screenshots/iphone/04-emoji.png" width="32%" alt="Custom emoji suggestions while typing">
+  <img src="docs/screenshots/iphone/05-coast-middle.png" width="32%" alt="Photos, video, voice messages and a link card">
+  <img src="docs/screenshots/iphone/06-unread.png" width="32%" alt="New Messages divider and read receipts">
+</p>
+
+<p>
+  <img src="docs/screenshots/gifs/reply.gif" width="24%" alt="Swiping a message to reply and sending">
+  <img src="docs/screenshots/gifs/react.gif" width="24%" alt="Reacting with a custom emoji">
+  <img src="docs/screenshots/gifs/emoji.gif" width="24%" alt="Typing : to insert a custom emoji">
+  <img src="docs/screenshots/gifs/media.gif" width="24%" alt="Paging through a link preview's photos">
+</p>
+
+Every screen above is the kit talking to one made-up backend, `Examples/ChatKitExample` (see Example).
+
 ## Install
 
 ```swift
@@ -82,7 +100,18 @@ ChatKit.networkIcon = { network, size in AnyView(MyNetworkIcon(network, size: si
 ChatKit.openAppLink = { url, base in MyRouter.open(url) }
 ```
 
-For a Chats list, define your destination type (your id for a chat on any network), conform each network to `ChatListProvider`, and drive your list with `ChatListViewModel<Destination>(sources:)`. stupid social's `ChatsView` is a full example.
+For a Chats list, define your destination type (your id for a chat on any network), conform each network to `ChatListProvider`, and drive your list with `ChatListViewModel<Destination>(sources:)`. `Examples/ChatKitExample` is a small example and stupid social's `ChatsView` a full one.
+
+## Example
+
+`Examples/ChatKitExample` is an app on one in-memory backend: `DemoChatAdapter` (reactions, custom emoji, voice playback, read receipts, typing, mentions and editing), `DemoChatListProvider`, and a plain SwiftUI list on `ChatListViewModel`. Swap `DemoBackend` for your API client and the rest stays. It depends on this checkout by path. Run it with `stupid-app`:
+
+```bash
+cd Examples/ChatKitExample
+stupid-app run --simulator
+```
+
+The README's screenshots and GIFs come from it, captured on an iPhone 16 Pro Max simulator and framed with the stupid style from `docs/screenshots/spec.json`.
 
 ## Develop
 
