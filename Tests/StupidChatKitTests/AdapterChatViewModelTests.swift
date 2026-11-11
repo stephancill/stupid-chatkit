@@ -334,6 +334,35 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    /// Links the app resolves are drawn as what it returns: in place of a card, after the embeds for a link only in
+    /// the text, once per message, and again when the app says a link has loaded.
+    func testResolvedLinksReplaceCardsAndFollowText() async throws {
+        let post = ChatEmbed.post(ChatPost(authorName: "Ada", text: "Hello"))
+        let postURL = try XCTUnwrap(URL(string: "https://posts.example/ada/1"))
+        var loaded: Set<URL> = []
+        ChatKit.resolveLink = { url in
+            guard url.host() == "posts.example" else { return nil }
+            return loaded.contains(url) ? post : nil
+        }
+        defer { ChatKit.resolveLink = nil }
+
+        let sender = ChatUser(id: "bo", name: "Bo", avatarURL: nil)
+        let card = ChatEmbed.card(title: "Post", subtitle: nil, systemImage: "link", imageURL: nil, link: postURL)
+        let adapter = FakeAdapter()
+        adapter.pages = [[
+            ChatMessage(id: "1", sender: sender, timestamp: Date(timeIntervalSince1970: 1), text: "see \(postURL.absoluteString)", embeds: [card], isOwn: false),
+            ChatMessage(id: "2", sender: sender, timestamp: Date(timeIntervalSince1970: 2), text: "and https://posts.example/ada/1 and https://example.com", isOwn: false),
+        ]]
+        let chat = makeChat(adapter)
+        await chat.connect()
+        XCTAssertEqual(chat.messages.map(\.embeds), [[card], []], "nothing until the link has loaded")
+
+        loaded.insert(postURL)
+        ChatKit.linksDidResolve()
+        XCTAssertEqual(chat.messages.map(\.embeds), [[post], [post]], "the card replaced, the text link added once")
+        chat.disconnect()
+    }
+
     func testSearchPagesBackForOlderMatches() async {
         let adapter = FakeUnseenReactionsAdapter()
         adapter.pages = [[said(4, "lunch?"), said(5, "ok")]]

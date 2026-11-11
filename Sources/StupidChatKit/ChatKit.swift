@@ -12,6 +12,18 @@ public enum ChatKit {
     /// open in the browser. The second URL is what relative links in the message resolve against
     /// (`ChatViewModel.linkBaseURL`).
     public static var openAppLink: (URL, URL?) -> Bool = { _, _ in false }
+    /// What to draw in place of a link, in every chat: such as the post a link points at, drawn as `.post`. Chats
+    /// ask for each link a message's cards and link previews open (the embed takes the card's place) and each web
+    /// link in its text (added after its embeds). Return nil when there is nothing, or nothing yet: start loading it
+    /// then, and call `linksDidResolve()` once it has loaded. Asked often, so answer from memory.
+    public static var resolveLink: ((URL) -> ChatEmbed?)?
+
+    /// Draws open chats' links again with what `resolveLink` returns now.
+    public static func linksDidResolve() {
+        NotificationCenter.default.post(name: linksDidResolveNotification, object: nil)
+    }
+
+    nonisolated static let linksDidResolveNotification = Notification.Name("StupidChatKit.linksDidResolve")
 }
 
 /// A chat network, named by its id (such as "telegram"). The framework only compares networks; an app adds its

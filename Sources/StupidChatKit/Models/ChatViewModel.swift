@@ -231,7 +231,8 @@ public struct ChatMessage: Hashable, Identifiable, Sendable {
     public let text: String?
     /// Inline Markdown, rendered without raw HTML.
     public let isMarkdown: Bool
-    public let embeds: [ChatEmbed]
+    /// Settable here so links can be drawn as what `ChatKit.resolveLink` returns.
+    public internal(set) var embeds: [ChatEmbed]
     public let replyToId: String?
     public let isDeleted: Bool
     public let isOwn: Bool
@@ -761,6 +762,13 @@ public class ChatViewModel: ObservableObject {
         self.mentionPattern = mentionPattern
         self.draftStore = draftStore
         draft = draftStore.draft(key: chatKey)
+        linkObserver = NotificationCenter.default.addObserver(forName: ChatKit.linksDidResolveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.redrawResolvedLinks() }
+        }
+    }
+
+    deinit {
+        linkObserver.map(NotificationCenter.default.removeObserver)
     }
 
     // MARK: Lifecycle and history
@@ -1174,12 +1182,79 @@ public class ChatViewModel: ObservableObject {
     /// Sets reactions before the messages they belong to, so new bubbles render with their reactions instead of
     /// growing a moment later.
     func publish(history newHistory: [ChatMessage], reactions newReactions: [String: [ChatReaction]]) {
+        publishedHistory = newHistory
         if reactions != newReactions {
             reactions = newReactions
         }
-        if history != newHistory {
-            history = newHistory
+        let resolved = resolvingLinks(newHistory)
+        if history != resolved {
+            history = resolved
         }
+    }
+
+    // MARK: Resolved links
+
+    /// The history as the network published it, before `ChatKit.resolveLink`.
+    private var publishedHistory: [ChatMessage] = []
+    /// Web links found in each text, kept since publishing runs often.
+    private var textLinks: [String: [URL]] = [:]
+    private nonisolated(unsafe) var linkObserver: (any NSObjectProtocol)?
+    private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+
+    private func redrawResolvedLinks() {
+        let resolved = resolvingLinks(publishedHistory)
+        if history != resolved {
+            history = resolved
+        }
+    }
+
+    /// Each message with the embeds `ChatKit.resolveLink` has for its links: in place of the card or link preview a
+    /// link opens, and after the embeds for links only in its text. One embed shows once per message.
+    func resolvingLinks(_ messages: [ChatMessage]) -> [ChatMessage] {
+        guard let resolve = ChatKit.resolveLink else { return messages }
+        return messages.map { message in
+            guard !message.isDeleted, !message.isNotice else { return message }
+            var embeds: [ChatEmbed] = []
+            var linked = Set<URL>()
+            var changed = false
+            for embed in message.embeds {
+                let link: URL? = switch embed {
+                case let .card(_, _, _, _, link), let .linkPreview(_, _, link, _): link
+                default: nil
+                }
+                if let link {
+                    linked.insert(link)
+                    if let rich = resolve(link) {
+                        changed = true
+                        if !embeds.contains(rich) {
+                            embeds.append(rich)
+                        }
+                        continue
+                    }
+                }
+                embeds.append(embed)
+            }
+            for url in links(in: message.text) where !linked.contains(url) {
+                guard let rich = resolve(url), !embeds.contains(rich) else { continue }
+                embeds.append(rich)
+                changed = true
+            }
+            guard changed else { return message }
+            var resolved = message
+            resolved.embeds = embeds
+            return resolved
+        }
+    }
+
+    private func links(in text: String?) -> [URL] {
+        guard let text, text.contains("http") else { return [] }
+        if let found = textLinks[text] { return found }
+        let range = NSRange(text.startIndex..., in: text)
+        let found = (Self.linkDetector?.matches(in: text, range: range) ?? [])
+            .compactMap(\.url)
+            .filter { ["http", "https"].contains($0.scheme?.lowercased()) }
+        textLinks[text] = found
+        return found
     }
 
     /// The picture beside the title: the other person in a one-to-one chat, else the chat's own from its row.

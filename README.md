@@ -98,6 +98,9 @@ At launch, tell the kit what it can't know (each is optional):
 ChatKit.onEvent = { event in /* usage metrics */ }
 ChatKit.networkIcon = { network, size in AnyView(MyNetworkIcon(network, size: size)) }
 ChatKit.openAppLink = { url, base in MyRouter.open(url) }
+// Draw links as something richer in every chat, such as the post a link points at; call
+// ChatKit.linksDidResolve() when one you started loading arrives.
+ChatKit.resolveLink = { url in MyPosts.embed(for: url) }
 ```
 
 For a Chats list, define your destination type (your id for a chat on any network), conform each network to `ChatListProvider`, and drive your list with `ChatListViewModel<Destination>(sources:)`. `Examples/ChatKitExample` is a small example and stupid social's `ChatsView` a full one.
