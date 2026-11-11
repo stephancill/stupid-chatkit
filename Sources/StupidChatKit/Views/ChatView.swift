@@ -150,19 +150,21 @@ private struct ChatTitlePill: View {
             if let avatar {
                 ChatAvatarImage(url: avatar.url, title: title, size: 32, colorKey: avatar.colorKey)
                     .overlay(alignment: .bottomTrailing) {
-                        // An opaque backing, since some badges (such as Spotify's round logo) have transparent corners.
-                        ChatKit.networkIcon(network, 12)
-                            .clipShape(Circle())
-                            .padding(1)
-                            .background(Color(uiColor: .systemBackground), in: Circle())
-                            .offset(x: 2, y: 2)
+                        if let icon = ChatKit.networkIcon {
+                            // An opaque backing, since some badges (such as Spotify's round logo) have transparent corners.
+                            icon(network, 12)
+                                .clipShape(Circle())
+                                .padding(1)
+                                .background(Color(uiColor: .systemBackground), in: Circle())
+                                .offset(x: 2, y: 2)
+                        }
                     }
             }
             VStack(spacing: 0) {
                 HStack(spacing: 4) {
                     // Without an avatar or subtitle to carry it, the network icon leads the title.
-                    if avatar == nil, subtitle.isEmpty {
-                        ChatKit.networkIcon(network, 14)
+                    if avatar == nil, subtitle.isEmpty, let icon = ChatKit.networkIcon {
+                        icon(network, 14)
                     }
                     Text(title)
                         .font(.headline)
@@ -171,8 +173,8 @@ private struct ChatTitlePill: View {
                 if !subtitle.isEmpty {
                     HStack(spacing: 4) {
                         // Without an avatar to carry it, the network icon leads the subtitle.
-                        if avatar == nil {
-                            ChatKit.networkIcon(network, 12)
+                        if avatar == nil, let icon = ChatKit.networkIcon {
+                            icon(network, 12)
                         }
                         Text(subtitle)
                             .font(.caption)

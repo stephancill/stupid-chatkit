@@ -220,6 +220,7 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     static var prefetchTimeout: Duration {
         .seconds(20)
     }
+
     /// Each prefetched row's id and state, so a row loads again only once it has changed.
     private var prefetched: Set<String> = []
     private var prefetchTask: Task<Void, Never>?

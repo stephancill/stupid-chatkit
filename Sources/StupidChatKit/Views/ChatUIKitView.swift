@@ -747,11 +747,12 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     // MARK: - Binding
 
     private func bind() {
-        Publishers.CombineLatest3(viewModel.$messages, viewModel.$hasEarlierMessages, viewModel.$hasLaterMessages)
-            .sink { [weak self] messages, hasEarlier, hasLater in
+        // The divider too: it's placed after history arrives, once the messages already rendered.
+        Publishers.CombineLatest4(viewModel.$messages, viewModel.$hasEarlierMessages, viewModel.$hasLaterMessages, viewModel.$firstUnreadMessageId.removeDuplicates())
+            .sink { [weak self] messages, hasEarlier, hasLater, firstUnreadId in
                 self?.hasLater = hasLater
                 self?.hasEarlier = hasEarlier
-                self?.applySnapshot(messages: messages, hasEarlier: hasEarlier, hasLater: hasLater)
+                self?.applySnapshot(messages: messages, hasEarlier: hasEarlier, hasLater: hasLater, firstUnreadId: firstUnreadId)
                 self?.updateJumpToLatestButton()
             }
             .store(in: &cancellables)
@@ -854,7 +855,8 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         viewModel.$canAttach.sink { [weak self] in self?.canAttach = $0; self?.refreshComposer() }.store(in: &cancellables)
     }
 
-    private func applySnapshot(messages: [ChatMessage], hasEarlier _: Bool, hasLater: Bool) {
+    /// Takes the published values rather than reading the view model, which still holds the old ones while it publishes.
+    private func applySnapshot(messages: [ChatMessage], hasEarlier _: Bool, hasLater: Bool, firstUnreadId: String?) {
         let previousItems = dataSource.snapshot().itemIdentifiers
         let previousIds = previousItems.filter { if case .message = $0 { true } else { false } }
         let wasEmpty = previousIds.isEmpty
@@ -867,7 +869,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
         messageIdByKey = Dictionary(messages.map { (itemKey(for: $0.id), $0.id) }, uniquingKeysWith: { _, latest in latest })
         let items = messages.map { Item.message(itemKey(for: $0.id)) }
-        let firstUnreadKey = viewModel.firstUnreadMessageId.map(itemKey(for:))
+        let firstUnreadKey = firstUnreadId.map(itemKey(for:))
         var rows: [Item] = []
         for (day, dayMessages) in Self.days(of: messages) {
             var dayRows = dayMessages.map { Item.message(itemKey(for: $0.id)) }

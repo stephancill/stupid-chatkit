@@ -5,8 +5,9 @@ import SwiftUI
 public enum ChatKit {
     /// Each thing the user does in a chat, for usage metrics.
     public static var onEvent: (ChatEvent) -> Void = { _ in }
-    /// A network's icon at a size in points, beside a chat's title; none by default.
-    public static var networkIcon: (ChatNetwork, CGFloat) -> AnyView = { _, _ in AnyView(EmptyView()) }
+    /// A network's icon at a size in points, beside a chat's title; `nil` (the default) shows none, as in an app
+    /// with one network.
+    public static var networkIcon: ((ChatNetwork, CGFloat) -> AnyView)?
     /// Opens a link the app handles itself, such as its own universal links, and returns whether it did; others
     /// open in the browser. The second URL is what relative links in the message resolve against
     /// (`ChatViewModel.linkBaseURL`).
