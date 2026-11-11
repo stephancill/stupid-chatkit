@@ -384,6 +384,9 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     /// app becomes active.
     private var isOpen = false
     private var isConnecting = false
+    /// While opening, the adapter's changes wait for the whole first load, so the messages show together with
+    /// the "New Messages" divider rather than at the bottom first and then jumping to it.
+    private var holdsHistory = false
     private var snapshotSaveTask: Task<Void, Never>?
     /// A computed property, since generic classes can't have static stored ones.
     private static var jumpPageLimit: Int {
@@ -432,7 +435,10 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         }
         errorMessage = nil
         do {
+            holdsHistory = true
+            defer { holdsHistory = false }
             try await adapter.loadNewest()
+            holdsHistory = false
             adapterDidChange()
             // A divider placed from the snapshot goes when history replaced the messages it sat on.
             if let divider = firstUnreadMessageId, message(withId: divider) == nil {
@@ -928,6 +934,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
                 receipts = latest
             }
         }
+        guard !holdsHistory else { return }
         publish(history: adapter.messages, reactions: adapter.reactions)
         updateUnreadCount()
         scheduleSnapshotSave()

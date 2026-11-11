@@ -62,6 +62,20 @@ final class AdapterChatViewModelTests: XCTestCase {
         XCTAssertEqual(chat.unreadCount, 2)
     }
 
+    func testMessagesChangedMidLoadShowWithTheirDividerOnceTheLoadEnds() async {
+        let adapter = FakeAdapter()
+        adapter.readUpTo = 1
+        adapter.pages = [[message(1), message(2), message(3)]]
+        let chat = makeChat(adapter)
+        var shownMidLoad: [String]?
+        adapter.midLoad = { shownMidLoad = chat.messages.map(\.id) }
+        await chat.connect()
+        XCTAssertEqual(shownMidLoad, [], "held back until the divider can be placed with them")
+        XCTAssertEqual(chat.messages.map(\.id), ["1", "2", "3"])
+        XCTAssertEqual(chat.firstUnreadMessageId, "2")
+        chat.disconnect()
+    }
+
     func testAdapterChangesOutsideCallsReachTheScreen() async {
         let adapter = FakeAdapter()
         adapter.pages = [[message(1)]]
@@ -703,6 +717,8 @@ private class FakeAdapter: ChatAdapter {
     var hasEarlierMessages = false
 
     var pages: [[ChatMessage]] = []
+    /// Runs partway through `loadNewest`, after an `onChange`, as networks that publish while loading do.
+    var midLoad: (@MainActor () async -> Void)?
     var error: Error?
     var readUpTo = 0
     private(set) var sent: [ChatOutgoing] = []
@@ -715,6 +731,10 @@ private class FakeAdapter: ChatAdapter {
         info.title = "Loaded"
         if !pages.isEmpty {
             messages = pages.removeFirst()
+        }
+        if let midLoad {
+            onChange?()
+            await midLoad()
         }
     }
 
