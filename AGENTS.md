@@ -16,7 +16,7 @@ StupidChatKit is the chat framework from stupid social (`../stupid-social`, `htt
 ## Rules
 
 - The kit never names a network, casts to a network's type or knows any app. A network's need becomes an optional ability protocol any network could adopt (`ChatEditing`, `ChatReactionSending`, `ChatTyping`, …), and the UI offers it exactly when the adapter conforms. Never add a flag that can disagree with the code.
-- Adapters only translate; behavior users expect to match across chats (connecting, polling, paging, unread counting, read markers, snapshots, drafts, optimistic sending) belongs to the framework. If shared behavior doesn't fit a network, extend the framework.
+- Adapters only translate; behavior users expect to match across chats (connecting, polling, paging, the local store, unread counting, read markers, drafts, optimistic sending) belongs to the framework. If shared behavior doesn't fit a network, extend the framework.
 - What the kit needs from an app goes through `ChatKit` (launch settings) or a protocol (`ChatReminders`, `ChatNotConnectedError`), never by reaching into an app.
 - Public API is what apps compile against: keep it small. Prefer patch releases: fixes and additions are a patch bump (0.6.0 → 0.6.1); only a breaking change is a minor bump while below 1.0 (major after), listed in the release notes.
 - Never put anything identifying in the kit: usage events (`ChatEvent`) carry networks and outcomes only, never names, ids, text or URLs.
