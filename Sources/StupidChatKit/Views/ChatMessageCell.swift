@@ -1470,8 +1470,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         return postFrame(rows, cornerRadius: 12)
     }
 
-    /// Replies, reposts and likes as networks show them: a symbol beside each count, compact ("1.2K"), spread across
-    /// the card from edge to edge.
+    /// Replies, reposts and likes as networks show them: a symbol beside each count, compact ("1.2K").
     private func postCounts(_ counts: ChatPost.Counts) -> UIView? {
         let items: [(symbol: String, count: Int?, name: String)] = [
             ("bubble.left", counts.replies, "replies"),
@@ -1496,13 +1495,9 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
             item.alignment = .center
             return item
         }
-        let row = UIStackView(arrangedSubviews: views)
-        row.distribution = .equalSpacing
-        row.spacing = 12
+        let row = UIStackView(arrangedSubviews: views + [UIView()])
+        row.spacing = 20
         row.alignment = .center
-        row.isLayoutMarginsRelativeArrangement = true
-        // In from the right edge a little, as X sets its last count.
-        row.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8)
         row.isAccessibilityElement = true
         row.accessibilityLabel = shown.map { _, count, name in "\(count) \(name)" }.joined(separator: ", ")
         return row
