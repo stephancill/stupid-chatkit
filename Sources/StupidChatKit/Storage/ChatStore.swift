@@ -344,6 +344,37 @@ public final class ChatStore: @unchecked Sendable {
         }
     }
 
+    // MARK: Outbox
+
+    /// Adds a message to send, or updates one already waiting.
+    func enqueue(_ item: ChatOutboxItem) throws {
+        let payload = try PropertyListEncoder().encode(item)
+        try locked {
+            try database.run(
+                "INSERT OR REPLACE INTO outbox (id, chat, account, created, payload) VALUES (?, ?, ?, ?, ?)",
+                [.text(item.id), .text(item.chatKey), .text(Self.accountId(of: item.chatKey)), .double(item.created.timeIntervalSince1970), .blob(payload)],
+            )
+        }
+    }
+
+    /// The chat's messages waiting to send, oldest first.
+    func outbox(chatKey: String) throws -> [ChatOutboxItem] {
+        try locked {
+            try database.rows("SELECT payload FROM outbox WHERE chat = ? ORDER BY created ASC", [.text(chatKey)]) { row in
+                try PropertyListDecoder().decode(ChatOutboxItem.self, from: row.blob(0) ?? Data())
+            }
+        }
+    }
+
+    func dequeue(id: String) throws {
+        try locked { try database.run("DELETE FROM outbox WHERE id = ?", [.text(id)]) }
+    }
+
+    /// Chats with messages waiting to send.
+    public func chatKeysWithQueuedMessages() throws -> [String] {
+        try locked { try database.rows("SELECT DISTINCT chat FROM outbox", map: { $0.text(0) ?? "" }) }
+    }
+
     // MARK: Maintenance
 
     /// Bytes on disk, the write-ahead log included.

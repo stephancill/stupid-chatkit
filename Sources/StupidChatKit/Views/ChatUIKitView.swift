@@ -1154,8 +1154,8 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
                 inputPill.layoutIfNeeded()
             }
         }
-        voiceButton.isEnabled = state == .connected
-        sendButton.isEnabled = isBusy || (state == .connected && !isSending && !isReadOnly && hasContent)
+        voiceButton.isEnabled = !isReadOnly
+        sendButton.isEnabled = isBusy || (!isSending && !isReadOnly && hasContent)
         sendButton.configuration?.showsActivityIndicator = isSending && !isBusy
         view.setNeedsLayout()
     }

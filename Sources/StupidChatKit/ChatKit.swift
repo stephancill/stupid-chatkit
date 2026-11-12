@@ -17,6 +17,15 @@ public enum ChatKit {
     /// link in its text (added after its embeds). Return nil when there is nothing, or nothing yet: start loading it
     /// then, and call `linksDidResolve()` once it has loaded. Asked often, so answer from memory.
     public static var resolveLink: ((URL) -> ChatEmbed?)?
+    /// Where every chat's history is kept. The default is in Application Support; an app whose notification
+    /// extension writes messages too sets one in its App Group container before any chat is made.
+    public static var store: ChatStore = {
+        do {
+            return try ChatStore()
+        } catch {
+            fatalError("Chat store failed to open: \(error)")
+        }
+    }()
 
     /// Draws open chats' links again with what `resolveLink` returns now.
     public static func linksDidResolve() {

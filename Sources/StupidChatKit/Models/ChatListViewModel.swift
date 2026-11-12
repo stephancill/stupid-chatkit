@@ -32,6 +32,9 @@ public struct ChatSummary<Destination: Hashable & Codable & Sendable>: Identifia
     private var unseenReactions: Int?
     /// The other person's presence in a one-to-one chat, so the chat opens showing it.
     public let presence: ChatPresence?
+    /// The network's id for the latest message, the `ChatRecord.id` it is stored under; when the store holds it,
+    /// the chat's stored messages are current and opening it fetches nothing.
+    public var latestMessageId: String?
 
     /// Whether the user muted the chat on its network, so its unread count is shown quietly.
     public var isMuted: Bool {
@@ -70,6 +73,7 @@ public struct ChatSummary<Destination: Hashable & Codable & Sendable>: Identifia
         titleNamesPeople: Bool = false,
         isMuted: Bool = false,
         presence: ChatPresence? = nil,
+        latestMessageId: String? = nil,
     ) {
         self.id = id
         accountId = ""
@@ -88,6 +92,7 @@ public struct ChatSummary<Destination: Hashable & Codable & Sendable>: Identifia
         self.titleNamesPeople = titleNamesPeople
         muted = isMuted
         self.presence = presence
+        self.latestMessageId = latestMessageId
     }
 }
 
@@ -204,16 +209,37 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         let unseenReactionCount: Int?
     }
 
-    /// Builds the chat for a row so its newest messages can load ahead of opening it (`ChatViewModel.prefetch()`);
-    /// nil for a chat that can't. Rows with unread messages load whenever the list changes, so a chat opens on
-    /// its new messages rather than waiting for them.
+    /// Builds the chat for a row so its newest messages can load into the store ahead of opening it
+    /// (`ChatViewModel.prefetch()`); nil for a chat that can't. Whenever the list changes, the first
+    /// `prefetchLimit` rows (unmuted before muted, unread before read, then newest) load unless the store already
+    /// holds their latest message, so a chat opens on its messages rather than waiting for them.
     public var prefetcher: ((Summary) -> ChatViewModel?)? {
         didSet { schedulePrefetch() }
     }
 
-    /// How many unread chats load ahead after each change, newest first. Muted chats don't.
+    /// How many rows are kept loaded ahead, after Telegram's preloading.
     public static var prefetchLimit: Int {
-        5
+        30
+    }
+
+    /// How many load at once.
+    static var prefetchConcurrency: Int {
+        3
+    }
+
+    /// The rows to keep loaded, in the order they load.
+    static func prefetchOrder(_ chats: [Summary]) -> [Summary] {
+        let ranked = chats.enumerated().sorted { lhs, rhs in
+            if lhs.element.isMuted != rhs.element.isMuted {
+                return !lhs.element.isMuted
+            }
+            let lhsUnread = lhs.element.unreadCount > 0, rhsUnread = rhs.element.unreadCount > 0
+            if lhsUnread != rhsUnread {
+                return lhsUnread
+            }
+            return lhs.offset < rhs.offset
+        }
+        return Array(ranked.prefix(prefetchLimit).map(\.element))
     }
 
     /// A load ahead that hasn't finished in this time is given up, so one slow network doesn't hold the rest.
@@ -333,6 +359,7 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     /// Keeps the chat's row current while it is open, so returning to the list shows its latest message and
     /// read state without waiting for the reload.
     public func follow<ViewModel: ChatViewModel>(_ viewModel: ViewModel, chatId: String) -> ViewModel {
+        viewModel.latestMessageId = viewModel.latestMessageId ?? (chats + archivedChats).first { $0.id == chatId }?.latestMessageId
         viewModel.summaryDidChange = { [weak self] latest, body, unreadCount, unseenReactionCount in
             guard let self else { return }
             followedUpdateCount += 1
@@ -370,6 +397,9 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
                 body
             }
             chat.timestamp = latest.timestamp ?? chat.timestamp
+            if !latest.isSending {
+                chat.latestMessageId = latest.id
+            }
         }
         chat.unreadCount = unreadCount
         if let unseenReactionCount {
@@ -428,22 +458,38 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         }
     }
 
-    /// One chat at a time, so the networks see what opening them one after another would send.
+    /// A few chats at a time; each is tried once per latest message and unread count, so a failure waits for the
+    /// row to change rather than retrying.
     private func prefetchUnread() async {
-        let due = chats.filter { $0.unreadCount > 0 && !$0.isMuted }.prefix(Self.prefetchLimit)
-        for chat in due {
-            let key = "\(chat.id)|\(chat.timestamp?.timeIntervalSince1970 ?? 0)|\(chat.unreadCount)"
+        var due: [(key: String, viewModel: ChatViewModel)] = []
+        for chat in Self.prefetchOrder(chats) {
+            let key = "\(chat.id)|\(chat.latestMessageId ?? "")|\(chat.timestamp?.timeIntervalSince1970 ?? 0)|\(chat.unreadCount)"
             guard !prefetched.contains(key), let viewModel = prefetcher?(chat) else { continue }
-            // Tried once per state either way: a failure waits for the row to change rather than retrying.
             prefetched.insert(key)
-            let load = Task { try await viewModel.prefetch() }
-            let timeout = Task {
-                try await Task.sleep(for: Self.prefetchTimeout)
-                load.cancel()
-            }
-            _ = await load.result
-            timeout.cancel()
+            viewModel.latestMessageId = chat.latestMessageId
+            guard !viewModel.isCurrent else { continue }
+            due.append((key, viewModel))
         }
+        let models = due.map(\.viewModel)
+        var index = 0
+        while index < models.count {
+            let batch = models[index ..< min(index + Self.prefetchConcurrency, models.count)]
+            index += batch.count
+            let loads = batch.map { viewModel in Task { await Self.prefetch(viewModel) } }
+            for load in loads {
+                await load.value
+            }
+        }
+    }
+
+    private static func prefetch(_ viewModel: ChatViewModel) async {
+        let load = Task { try await viewModel.prefetch() }
+        let timeout = Task {
+            try await Task.sleep(for: prefetchTimeout)
+            load.cancel()
+        }
+        _ = await load.result
+        timeout.cancel()
     }
 
     private static func isCancellation(_ error: Error) -> Bool {

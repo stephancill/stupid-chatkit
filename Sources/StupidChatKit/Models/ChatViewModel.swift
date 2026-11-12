@@ -725,6 +725,8 @@ public class ChatViewModel: ObservableObject {
 
     /// Messages the user sent that aren't in `history` yet, shown after it with a sending indicator.
     private var outgoing: [ChatMessage] = []
+    /// Messages the user sent before the chat connected, which go once it does (`ChatStore`'s outbox).
+    private var queued: [ChatMessage] = []
     /// Confirmed message id → its sending copy, which stays until the message is in `history`.
     private var awaitingHistory: [String: String] = [:]
     /// "Sending" ids → the history ids when they were sent, so the sent message is recognized if history brings it
@@ -798,9 +800,18 @@ public class ChatViewModel: ObservableObject {
     /// Stops following the conversation when the chat closes.
     public func disconnect() {}
 
-    /// Loads the newest messages into the chat's snapshot without opening it, so it opens on them: nothing is
-    /// marked read, followed or polled. A chat without a snapshot does nothing.
+    /// Loads the newest messages into the store without opening the chat, so it opens on them: nothing is marked
+    /// read, followed or polled. Does nothing when the stored messages are current.
     public func prefetch() async throws {}
+
+    /// The network's latest message in the chat, as its Chats row says; when the store holds it, opening fetches
+    /// nothing.
+    public var latestMessageId: String?
+
+    /// Whether the stored messages are the chat's newest (`ChatStore.isCurrent`).
+    public var isCurrent: Bool {
+        false
+    }
 
     public func loadEarlier() async {}
 
@@ -974,11 +985,11 @@ public class ChatViewModel: ObservableObject {
     /// returns, which should first load the sent message. A failure takes it away and puts the text and
     /// attachment back in the composer, if the user hasn't started another message. A sticker or voice message shows
     /// as itself and leaves the draft as it is; a voice message that fails is lost, like a sticker.
-    func sendOptimistically(text: String, attachment: ChatAttachment?, sticker: ChatSticker? = nil, voice: ChatVoiceNote? = nil, forward: ChatForward? = nil, replyToId: String?, deliver: () async throws -> String?) async {
+    func sendOptimistically(text: String, attachment: ChatAttachment?, sticker: ChatSticker? = nil, voice: ChatVoiceNote? = nil, forward: ChatForward? = nil, replyToId: String?, clearsComposer: Bool = true, deliver: () async throws -> String?) async {
         errorMessage = nil
         let part = stageSending(text: text, attachment: attachment, sticker: sticker, voice: voice, forward: forward, replyToId: replyToId)
         let keepsDraft = sticker != nil || voice != nil || forward != nil
-        if !keepsDraft {
+        if !keepsDraft, clearsComposer {
             draft = ""
             attachments = []
         }
@@ -1003,10 +1014,10 @@ public class ChatViewModel: ObservableObject {
     /// Several files sent together: one message each, in order, the first carrying the text and the reply. All of
     /// them show as sending at once and go one after another; a failure stops there, takes away the copies not yet
     /// sent and puts their files (and the text, if the first failed) back in an empty composer.
-    func sendOptimistically(text: String, attachments files: [ChatAttachment], replyToId: String?, deliver: @MainActor (ChatOutgoing) async throws -> String?) async {
+    func sendOptimistically(text: String, attachments files: [ChatAttachment], replyToId: String?, clearsComposer: Bool = true, deliver: @MainActor (ChatOutgoing) async throws -> String?) async {
         guard files.count > 1 else {
             let attachment = files.first
-            await sendOptimistically(text: text, attachment: attachment, replyToId: replyToId) {
+            await sendOptimistically(text: text, attachment: attachment, replyToId: replyToId, clearsComposer: clearsComposer) {
                 try await deliver(ChatOutgoing(text: text, attachment: attachment, replyToId: replyToId))
             }
             return
@@ -1016,9 +1027,11 @@ public class ChatViewModel: ObservableObject {
             ChatOutgoing(text: index == 0 ? text : "", attachment: file, replyToId: index == 0 ? replyToId : nil)
         }
         let parts = outgoing.map { stageSending(text: $0.text, attachment: $0.attachment, replyToId: $0.replyToId) }
-        draft = ""
-        attachments = []
-        replyingTo = nil
+        if clearsComposer {
+            draft = ""
+            attachments = []
+            replyingTo = nil
+        }
         composeMessages()
         scrollToLatestRequest += 1
         for (index, message) in outgoing.enumerated() {
@@ -1051,10 +1064,30 @@ public class ChatViewModel: ObservableObject {
     private func stageSending(text: String, attachment: ChatAttachment?, sticker: ChatSticker? = nil, voice: ChatVoiceNote? = nil, forward: ChatForward? = nil, replyToId: String?) -> SendingPart {
         let localId = "sending-\(UUID().uuidString)"
         historyAtSend[localId] = Set(history.map(\.id))
+        let (message, image) = sendingCopy(localId: localId, text: text, attachment: attachment, sticker: sticker, voice: voice, forward: forward, replyToId: replyToId)
+        outgoing.append(message)
+        return SendingPart(localId: localId, image: image)
+    }
+
+    /// Shows a message waiting for the chat to connect, as sending.
+    func showQueued(id: String, text: String, attachment: ChatAttachment?, sticker: ChatSticker?, voice: ChatVoiceNote?, replyToId: String?) {
+        let (message, _) = sendingCopy(localId: id, text: text, attachment: attachment, sticker: sticker, voice: voice, forward: nil, replyToId: replyToId)
+        queued.append(message)
+        composeMessages()
+        scrollToLatestRequest += 1
+    }
+
+    func removeQueued(id: String) {
+        queued.removeAll { $0.id == id }
+        sendingVoiceFiles[id] = nil
+        composeMessages()
+    }
+
+    private func sendingCopy(localId: String, text: String, attachment: ChatAttachment?, sticker: ChatSticker?, voice: ChatVoiceNote?, forward: ChatForward?, replyToId: String?) -> (ChatMessage, ChatEmbed?) {
         let image = attachment.flatMap { Self.localImage(attachment: $0, id: localId) }
         let voiceEmbed = voice.map { ChatEmbed.voice(previewId: localId, duration: $0.duration, waveform: $0.waveform) }
         sendingVoiceFiles[localId] = voice?.fileURL
-        outgoing.append(ChatMessage(
+        let message = ChatMessage(
             id: localId,
             sender: ChatUser(id: "you", name: "You", avatarURL: nil),
             timestamp: Date(),
@@ -1064,8 +1097,8 @@ public class ChatViewModel: ObservableObject {
             isOwn: true,
             isSending: true,
             forwardedFrom: forward.map { ChatForwardOrigin(name: $0.originName) },
-        ))
-        return SendingPart(localId: localId, image: image)
+        )
+        return (message, image)
     }
 
     /// The copy waits for `id` in history; without an id it goes now.
@@ -1311,7 +1344,7 @@ public class ChatViewModel: ObservableObject {
         let shown = history.map { message in
             let message = pickedImages[message.id].map(message.showing) ?? message
             return pendingEdits[message.id].map(message.editing(to:)) ?? message
-        } + outgoing
+        } + outgoing + queued
         if messages != shown {
             messages = shown
         }

@@ -100,17 +100,23 @@ public protocol ChatAdapter: AnyObject {
     var onChange: (() -> Void)? { get set }
 
     var info: ChatInfo { get }
-    /// Oldest first.
-    var messages: [ChatMessage] { get }
-    /// Per-message reaction totals, keyed by message id.
-    var reactions: [String: [ChatReaction]] { get }
-    var hasEarlierMessages: Bool { get }
+    /// Set by the framework before anything else: the chat's stored history. The adapter writes what arrives
+    /// outside a page fetch here (live updates, sent messages, the result of an action such as a reaction).
+    var history: ChatHistory? { get set }
 
-    /// Loads the newest messages, both when the chat opens and on each poll.
-    func loadNewest() async throws
-    func loadEarlier() async throws
-    /// Sends and returns the network's id for the message, or `nil` when the network doesn't say (then the
-    /// adapter loads the sent message before returning).
+    /// A page of history for the request. `.after` and `.around` come only for adapters that adopt
+    /// `ChatWindowing`. Fetching never marks anything read on the network.
+    func fetch(_ request: ChatPageRequest) async throws -> ChatPage
+    /// The messages, oldest first, and their reaction totals keyed by message id, that stored records show as.
+    /// `records` are a stretch of history oldest first, followed by the records related to them; records that
+    /// aren't messages of their own (`ChatRecord.relatesTo`) render into the ones they relate to.
+    func render(_ records: [ChatRecord]) -> ChatRendering
+    /// The cursor for the history before a stored message, for a gap that live updates opened rather than a page;
+    /// `nil` where the network's cursors can't be made from a message, and the framework refetches the newest page.
+    func cursor(before record: ChatRecord) -> ChatCursor?
+
+    /// Sends and returns the network's id for the message, or `nil` when the network doesn't say. The framework
+    /// fetches the newest page afterwards unless the message's record is stored by then.
     func send(_ message: ChatOutgoing) async throws -> String?
     /// Whether the message is past the user's read position on the network.
     func isAfterReadPosition(_ message: ChatMessage) -> Bool
@@ -119,9 +125,62 @@ public protocol ChatAdapter: AnyObject {
     func markRead(upTo message: ChatMessage) -> (@MainActor () async throws -> Void)?
     func reactors(of emoji: String, on messageId: String) -> [ChatReactor]
 
-    /// What the chat showed, for opening with it next time; `nil` when there is nothing to keep.
-    func snapshot() -> Data?
-    func restore(snapshot: Data)
+    /// What the adapter keeps about the chat besides its history (names, read positions, …), for the next visit;
+    /// `nil` when there is nothing to keep.
+    func state() -> Data?
+    func restore(state: Data)
+}
+
+public extension ChatAdapter {
+    func cursor(before _: ChatRecord) -> ChatCursor? {
+        nil
+    }
+}
+
+/// What a stretch of stored history shows as.
+public struct ChatRendering: Sendable {
+    public var messages: [ChatMessage]
+    public var reactions: [String: [ChatReaction]]
+
+    public init(messages: [ChatMessage], reactions: [String: [ChatReaction]] = [:]) {
+        self.messages = messages
+        self.reactions = reactions
+    }
+}
+
+/// One chat's stored history, as its adapter sees it.
+@MainActor
+public final class ChatHistory {
+    public let store: ChatStore
+    public let chatKey: String
+
+    public init(store: ChatStore, chatKey: String) {
+        self.store = store
+        self.chatKey = chatKey
+    }
+
+    /// Stores records that arrived outside a page (`ChatStore.write`).
+    public func write(_ records: [ChatRecord]) throws {
+        try store.write(records, chatKey: chatKey)
+    }
+
+    public func delete(ids: [String]) throws {
+        try store.delete(ids: ids, chatKey: chatKey)
+    }
+
+    /// Changes a stored record, such as an optimistic reaction; `transform` returning `nil` leaves it.
+    public func update(id: String, _ transform: (ChatRecord) throws -> ChatRecord?) throws {
+        try store.update(id: id, chatKey: chatKey, transform)
+    }
+
+    public func record(id: String) throws -> ChatRecord? {
+        try store.record(id: id, chatKey: chatKey)
+    }
+
+    /// The records related to these, wherever they are stored.
+    public func related(to ids: [String]) throws -> [ChatRecord] {
+        try store.related(to: ids, chatKey: chatKey)
+    }
 }
 
 /// Changing the text of the user's sent messages.
@@ -284,17 +343,10 @@ public protocol ChatReferenceResolving: ChatAdapter {
     var unavailableReferences: Set<String> { get }
 }
 
-/// Showing a window of older history around a message, without loading everything in between.
+/// Fetching history around a message and after a cursor (`ChatPageRequest.around`, `.after`), so the chat can jump
+/// to an old message without loading everything in between. Without it, a jump pages back from the newest.
 @MainActor
-public protocol ChatWindowing: ChatAdapter {
-    /// True while the messages are an older window that doesn't reach the newest message.
-    var hasLaterMessages: Bool { get }
-    func loadLater() async throws
-    /// Shows a window around the message; `false` when the network no longer has it.
-    func showWindow(around messageId: String) async throws -> Bool
-    /// Leaves an older window for the newest messages.
-    func showLatest() async throws
-}
+public protocol ChatWindowing: ChatAdapter {}
 
 /// Typing indications, both ways.
 @MainActor
@@ -373,33 +425,53 @@ public protocol ChatLinking: ChatMessageLinking {
     func referenceSuggestions(for query: String) -> [ChatReferenceSuggestion]
 }
 
+enum AdapterChatViewModelLimits {
+    /// Messages a chat opens with.
+    static let windowCount = 60
+    /// Messages a scroll past either end shows more of.
+    static let pageCount = 50
+    /// How many times opening goes further back while every message shown is unread.
+    static let unreadExtensions = 4
+}
+
 /// The shared chat screen's model for a network that has a `ChatAdapter`.
 @MainActor
 public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     public let adapter: Adapter
     /// The account the chat belongs to (`Account.id`).
     public let accountId: String
-    private let snapshotCache: ChatSnapshotCache
+    public let store: ChatStore
     /// From a successful `connect()` until `disconnect()` or a lost connection; `connect()` runs again when the
     /// app becomes active.
     private var isOpen = false
     private var isConnecting = false
-    /// While opening, the adapter's changes wait for the whole first load, so the messages show together with
-    /// the "New Messages" divider rather than at the bottom first and then jumping to it.
-    private var holdsHistory = false
-    private var snapshotSaveTask: Task<Void, Never>?
+    /// Where the shown stretch of history sits in the store.
+    private var position = ChatStore.WindowPosition.newest(count: AdapterChatViewModelLimits.windowCount)
+    /// The shown stretch as last read, rendered again whenever the adapter changes.
+    private var window = ChatStore.Window.empty
+    /// Whether the window shows the newest messages, so it moves to a newer chunk when one starts.
+    private var followsNewest = true
+    private var storeObservation: ChatStoreObservation?
+    private var stateSaveTask: Task<Void, Never>?
+    /// Voice messages being sent this visit → the recording the composer made, played while it sends.
+    private var recordings: [String: ChatVoiceNote] = [:]
     /// A computed property, since generic classes can't have static stored ones.
     private static var jumpPageLimit: Int {
         20
     }
 
-    public init(adapter: Adapter, accountId: String, snapshotCache: ChatSnapshotCache = ChatSnapshotCache(), draftStore: ChatDraftStore = ChatDraftStore()) {
+    public init(adapter: Adapter, accountId: String, store: ChatStore = ChatKit.store, draftStore: ChatDraftStore = ChatDraftStore()) {
         self.adapter = adapter
         self.accountId = accountId
-        self.snapshotCache = snapshotCache
+        self.store = store
+        let chatKey = "\(accountId)|\(adapter.key)"
+        if let state = try? store.state(chatKey: chatKey) {
+            adapter.restore(state: state)
+        }
+        adapter.history = ChatHistory(store: store, chatKey: chatKey)
         super.init(
             network: adapter.network,
-            chatKey: "\(accountId)|\(adapter.key)",
+            chatKey: chatKey,
             title: adapter.info.title,
             subtitle: adapter.info.subtitle,
             canReply: adapter.canReply,
@@ -418,12 +490,24 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
                 Task { await self.poll() }
             }
         }
-        if let snapshot = snapshotCache.data(key: chatKey) {
-            adapter.restore(snapshot: snapshot)
-        }
-        adapterDidChange()
+        storeObservation = store.observe(chatKey: chatKey) { [weak self] in self?.reloadWindow() }
+        openAtFirstUnread()
+        restoreOutbox()
         // In the first render, rather than appearing once history arrives.
         placeUnreadDivider()
+    }
+
+    /// Reads the newest stored messages, going back further (up to a limit) while all of them are unread, so the
+    /// chat opens at the "New Messages" divider.
+    private func openAtFirstUnread() {
+        reloadWindow()
+        var extensions = 0
+        while extensions < AdapterChatViewModelLimits.unreadExtensions, window.hasStoredEarlier,
+              let oldest = history.first(where: { !$0.isNotice }), isUnread(oldest)
+        {
+            extend(earlierBy: AdapterChatViewModelLimits.windowCount)
+            extensions += 1
+        }
     }
 
     override public func connect() async {
@@ -434,18 +518,20 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             state = .connecting
         }
         errorMessage = nil
+        try? store.markOpened(chatKey: chatKey)
         do {
-            holdsHistory = true
-            defer { holdsHistory = false }
-            try await adapter.loadNewest()
-            holdsHistory = false
-            adapterDidChange()
-            // A divider placed from the snapshot goes when history replaced the messages it sat on.
+            if try !store.isCurrent(chatKey: chatKey, latestMessageId: latestMessageId) {
+                try await fetchNewest()
+            }
+            if followsNewest {
+                moveToNewest()
+            }
+            // A divider placed from stored messages goes when history replaced the messages it sat on.
             if let divider = firstUnreadMessageId, message(withId: divider) == nil {
                 firstUnreadMessageId = nil
             }
             placeUnreadDivider()
-            saveSnapshot()
+            saveState()
             canReact = (adapter as? any ChatReactionSending)?.acceptsReactions ?? false
             canAttach = adapter.acceptsAttachments
             isReadOnly = (adapter as? any ChatReadOnlyAccess)?.isReadOnly ?? false
@@ -461,6 +547,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
                 self.focusMessageId = nil
                 await jump(to: focusMessageId)
             }
+            await deliverQueued()
         } catch {
             (adapter as? any ChatLiveUpdating)?.stopFollowing()
             state = .disconnected(error.localizedDescription)
@@ -471,13 +558,25 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         isOpen = false
         stopPolling()
         (adapter as? any ChatLiveUpdating)?.stopFollowing()
-        snapshotSaveTask?.cancel()
-        saveSnapshot()
+        stateSaveTask?.cancel()
+        saveState()
     }
 
     override public func prefetch() async throws {
-        try await adapter.loadNewest()
-        saveSnapshot()
+        if try store.isCurrent(chatKey: chatKey, latestMessageId: latestMessageId) {
+            return
+        }
+        try await fetchNewest()
+        saveState()
+    }
+
+    override public var isCurrent: Bool {
+        (try? store.isCurrent(chatKey: chatKey, latestMessageId: latestMessageId)) ?? false
+    }
+
+    private func fetchNewest() async throws {
+        let page = try await adapter.fetch(.newest)
+        try store.apply(page, for: .newest, chatKey: chatKey)
     }
 
     /// Without an error the app closed the connection itself (it went to the background) and reconnects when
@@ -489,80 +588,176 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     }
 
     override func poll() async {
-        try? await adapter.loadNewest()
-        adapterDidChange()
-    }
-
-    override public func loadEarlier() async {
-        guard hasEarlierMessages, !isLoadingEarlier else { return }
-        isLoadingEarlier = true
-        defer { isLoadingEarlier = false }
         do {
-            try await adapter.loadEarlier()
+            try await fetchNewest()
+            saveState()
         } catch {
-            errorMessage = error.localizedDescription
+            // A failed poll keeps what is shown; the next one tries again.
         }
-        adapterDidChange()
     }
 
     // MARK: Windows
 
-    override public func loadLater() async {
-        guard let windowing = adapter as? any ChatWindowing, hasLaterMessages, !isLoadingLater else { return }
-        isLoadingLater = true
-        defer { isLoadingLater = false }
+    private func reloadWindow() {
         do {
-            try await windowing.loadLater()
+            window = try store.window(chatKey: chatKey, at: position)
         } catch {
             errorMessage = error.localizedDescription
+            return
+        }
+        if followsNewest, let chunk = window.chunk, !chunk.reachesNewest, position.upperSortKey == nil {
+            // A newer chunk started above a gap: show it, as the newest messages are what was showing.
+            moveToNewest()
+            return
+        }
+        if position.anchorId == nil, let oldest = window.oldestMessage {
+            // From here the window grows with new messages rather than sliding.
+            position.anchorId = oldest.id
         }
         adapterDidChange()
     }
 
-    /// Scrolls to a loaded message, or shows a window around one that isn't. Networks without windows load
-    /// earlier pages until it's there, up to `jumpPageLimit` of them.
+    private func moveToNewest() {
+        position = .newest(count: max(AdapterChatViewModelLimits.windowCount, min(history.count, AdapterChatViewModelLimits.windowCount * 4)))
+        followsNewest = true
+        do {
+            window = try store.window(chatKey: chatKey, at: position)
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+        position.anchorId = window.oldestMessage?.id
+        adapterDidChange()
+    }
+
+    private func extend(earlierBy count: Int) {
+        guard let extended = try? store.position(extending: position, earlierBy: count, chatKey: chatKey) else { return }
+        position = extended
+        reloadWindow()
+    }
+
+    override public func loadEarlier() async {
+        guard hasEarlierMessages, !isLoadingEarlier else { return }
+        if window.hasStoredEarlier {
+            extend(earlierBy: AdapterChatViewModelLimits.pageCount)
+            return
+        }
+        guard let chunk = window.chunk, chunk.hasEarlier else { return }
+        isLoadingEarlier = true
+        defer { isLoadingEarlier = false }
+        do {
+            if let cursor = chunk.earlierCursor ?? window.oldestMessage.flatMap(adapter.cursor(before:)) {
+                let page = try await adapter.fetch(.before(cursor))
+                try store.apply(page, for: .before(cursor), chatKey: chatKey, adjacentTo: chunk.id)
+                extend(earlierBy: max(page.records.count, 1))
+            } else {
+                // A gap live updates opened, on a network whose cursors can't be made from a message: the newest
+                // page may close it.
+                try await fetchNewest()
+                extend(earlierBy: AdapterChatViewModelLimits.pageCount)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    override public func loadLater() async {
+        guard hasLaterMessages, !isLoadingLater else { return }
+        if window.hasStoredLater {
+            extendLater()
+            return
+        }
+        guard let chunk = window.chunk, !chunk.reachesNewest else { return }
+        guard adapter is any ChatWindowing, let cursor = chunk.laterCursor else {
+            await jumpToLatest()
+            return
+        }
+        isLoadingLater = true
+        defer { isLoadingLater = false }
+        do {
+            let page = try await adapter.fetch(.after(cursor))
+            guard !page.records.isEmpty else {
+                await jumpToLatest()
+                return
+            }
+            try store.apply(page, for: .after(cursor), chatKey: chatKey, adjacentTo: chunk.id)
+            extendLater()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func extendLater() {
+        guard let extended = try? store.position(extending: position, laterBy: AdapterChatViewModelLimits.pageCount, chatKey: chatKey) else { return }
+        position = extended
+        reloadWindow()
+        followsNewest = position.upperSortKey == nil && (window.chunk?.reachesNewest ?? false)
+    }
+
+    /// Shows a stored message in a window around it, fetching one where the network can (`ChatWindowing`), else
+    /// paging back from the newest up to `jumpPageLimit` pages.
     override public func jump(to messageId: String) async {
         if message(withId: messageId) != nil, referencedMessages[messageId] == nil {
             jumpTarget = messageId
             return
         }
-        guard let windowing = adapter as? any ChatWindowing else {
-            for _ in 0 ..< Self.jumpPageLimit where adapter.hasEarlierMessages && message(withId: messageId) == nil {
-                await loadEarlier()
-            }
-            if message(withId: messageId) != nil {
-                jumpTarget = messageId
-            } else {
-                errorMessage = "That message is too far back to show."
-            }
+        if showStored(around: messageId) {
             return
         }
-        do {
-            guard try await windowing.showWindow(around: messageId) else {
-                errorMessage = "That message is no longer available."
-                return
-            }
-            adapterDidChange()
-            jumpTarget = messageId
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    override public func jumpToLatest() async {
-        if let windowing = adapter as? any ChatWindowing, hasLaterMessages {
+        if adapter is any ChatWindowing {
             do {
-                try await windowing.showLatest()
-                adapterDidChange()
+                let page = try await adapter.fetch(.around(messageId: messageId))
+                if !page.records.isEmpty {
+                    try store.apply(page, for: .around(messageId: messageId), chatKey: chatKey)
+                }
             } catch {
                 errorMessage = error.localizedDescription
                 return
             }
+            if !showStored(around: messageId) {
+                errorMessage = "That message is no longer available."
+            }
+            return
+        }
+        for _ in 0 ..< Self.jumpPageLimit where hasEarlierMessages && message(withId: messageId) == nil {
+            await loadEarlier()
+        }
+        if message(withId: messageId) != nil {
+            jumpTarget = messageId
+        } else {
+            errorMessage = "That message is too far back to show."
+        }
+    }
+
+    private func showStored(around messageId: String) -> Bool {
+        guard let around = try? store.position(around: messageId, count: AdapterChatViewModelLimits.windowCount, chatKey: chatKey) else { return false }
+        position = around
+        followsNewest = false
+        reloadWindow()
+        followsNewest = position.upperSortKey == nil && (window.chunk?.reachesNewest ?? false)
+        jumpTarget = messageId
+        return true
+    }
+
+    override public func jumpToLatest() async {
+        if !followsNewest || hasLaterMessages {
+            moveToNewest()
         }
         scrollToLatestRequest += 1
+        if isOpen, (try? store.isCurrent(chatKey: chatKey, latestMessageId: latestMessageId)) != true {
+            await poll()
+        }
     }
 
     // MARK: Composing
+
+    /// The network's copy of a sent message shows once stored; a network that didn't push it gets asked.
+    private func afterSend(_ id: String?) async {
+        if let id, (try? store.record(id: id, chatKey: chatKey)) != nil {
+            return
+        }
+        await poll()
+    }
 
     /// Stops the adapter's in-flight work, from the composer's stop button. No-op when the adapter isn't stoppable.
     override public func stopBusyWork() {
@@ -574,7 +769,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     override public func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if editingMessage != nil {
-            guard !text.isEmpty, state == .connected, let editing = adapter as? any ChatEditing else { return }
+            guard !text.isEmpty, let editing = adapter as? any ChatEditing else { return }
             await editOptimistically(text: text) { [weak self] id, text in
                 try await editing.edit(id, text: text)
                 self?.adapterDidChange()
@@ -583,11 +778,11 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         }
         let attachments = adapter.acceptsAttachments ? attachments : []
         if let forward = forwarding {
-            guard state == .connected, !isReadOnly else { return }
+            guard !isReadOnly else { return }
             if !text.isEmpty || !attachments.isEmpty {
-                await sendOptimistically(text: text, attachments: attachments, replyToId: nil) { [adapter] message in
+                await sendOptimistically(text: text, attachments: attachments, replyToId: nil) { [weak self, adapter] message in
                     let id = try await adapter.send(message)
-                    adapterDidChange()
+                    await self?.afterSend(id)
                     return id
                 }
                 guard errorMessage == nil else { return }
@@ -595,7 +790,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             await send(forward)
             return
         }
-        guard !text.isEmpty || !attachments.isEmpty, state == .connected else { return }
+        guard !text.isEmpty || !attachments.isEmpty, !isReadOnly else { return }
         let replyToId = canReply ? replyingTo?.id : nil
         if let commanding = adapter as? any ChatCommanding, commanding.isCommand(text) {
             isSending = true
@@ -611,11 +806,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             }
             return
         }
-        await sendOptimistically(text: text, attachments: attachments, replyToId: replyToId) { [adapter] message in
-            let id = try await adapter.send(message)
-            adapterDidChange()
-            return id
-        }
+        await submit(.message(text: text, attachments: attachments.map(ChatOutboxItem.Attachment.init), replyToId: replyToId))
     }
 
     override public var offersStickers: Bool {
@@ -635,13 +826,8 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     }
 
     override public func send(sticker: ChatSticker) async {
-        guard let sending = adapter as? any ChatStickerSending, state == .connected, !isReadOnly else { return }
-        let replyToId = canReply ? replyingTo?.id : nil
-        await sendOptimistically(text: "", attachment: nil, sticker: sticker, replyToId: replyToId) { [weak self] in
-            let id = try await sending.send(sticker: sticker, replyToId: replyToId)
-            self?.adapterDidChange()
-            return id
-        }
+        guard adapter is any ChatStickerSending, !isReadOnly else { return }
+        await submit(.sticker(sticker, replyToId: canReply ? replyingTo?.id : nil))
     }
 
     /// Networks without voice messages take the recording as an audio file.
@@ -650,17 +836,118 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     }
 
     override public func send(voice: ChatVoiceNote) async {
-        guard offersVoiceNotes, state == .connected, !isReadOnly else { return }
-        let replyToId = canReply ? replyingTo?.id : nil
-        await sendOptimistically(text: "", attachment: nil, voice: voice, replyToId: replyToId) { [weak self, adapter] in
-            let id: String? = if let sending = adapter as? any ChatVoiceSending {
-                try await sending.send(voice: voice, replyToId: replyToId)
-            } else {
-                try await adapter.send(ChatOutgoing(text: "", attachment: ChatVoiceFile.attachment(for: voice), replyToId: replyToId))
-            }
-            self?.adapterDidChange()
-            return id
+        guard offersVoiceNotes, !isReadOnly else { return }
+        // Kept in the outbox in case the chat closes before it goes; sent from the recording itself meanwhile.
+        await submit(.voice(
+            audio: (try? Data(contentsOf: voice.fileURL)) ?? Data(), fileExtension: voice.fileURL.pathExtension, duration: voice.duration, waveform: voice.waveform,
+            replyToId: canReply ? replyingTo?.id : nil,
+        ), recording: voice)
+    }
+
+    // MARK: Outbox
+
+    /// Sends now while the chat is connected; before then, keeps the message in the outbox and shows it as sending
+    /// until `connect()` delivers it. Either way it is in the outbox while it goes, so it outlives the app closing.
+    private func submit(_ content: ChatOutboxItem.Content, recording: ChatVoiceNote? = nil) async {
+        var item = ChatOutboxItem(id: "queued-\(UUID().uuidString)", chatKey: chatKey, created: Date(), content: content, isInFlight: isOpen)
+        recordings[item.id] = recording
+        do {
+            try store.enqueue(item)
+        } catch {
+            errorMessage = error.localizedDescription
+            return
         }
+        guard isOpen else {
+            show(queued: item)
+            if case .message = content {
+                draft = ""
+                attachments = []
+            }
+            replyingTo = nil
+            return
+        }
+        item.isInFlight = true
+        await deliver(item, clearsComposer: true)
+    }
+
+    private func show(queued item: ChatOutboxItem) {
+        switch item.content {
+        case let .message(text, attachments, replyToId):
+            showQueued(id: item.id, text: text, attachment: attachments.first?.attachment, sticker: nil, voice: nil, replyToId: replyToId)
+        case let .sticker(sticker, replyToId):
+            showQueued(id: item.id, text: "", attachment: nil, sticker: sticker, voice: nil, replyToId: replyToId)
+        case let .voice(audio, fileExtension, duration, waveform, replyToId):
+            let note = Self.voiceNote(id: item.id, audio: audio, fileExtension: fileExtension, duration: duration, waveform: waveform)
+            showQueued(id: item.id, text: "", attachment: nil, sticker: nil, voice: note, replyToId: replyToId)
+        }
+    }
+
+    /// Messages left from an earlier visit: waiting ones show as sending; ones the app closed on while sending go back
+    /// to the composer, since the network may have taken them.
+    private func restoreOutbox() {
+        for item in (try? store.outbox(chatKey: chatKey)) ?? [] {
+            guard item.isInFlight else {
+                show(queued: item)
+                continue
+            }
+            try? store.dequeue(id: item.id)
+            if case let .message(text, files, _) = item.content, draft.isEmpty, attachments.isEmpty {
+                draft = text
+                attachments = files.map(\.attachment)
+            }
+        }
+    }
+
+    private func deliverQueued() async {
+        for var item in (try? store.outbox(chatKey: chatKey)) ?? [] where !item.isInFlight {
+            guard isOpen else { return }
+            removeQueued(id: item.id)
+            item.isInFlight = true
+            await deliver(item, clearsComposer: false)
+        }
+    }
+
+    private func deliver(_ item: ChatOutboxItem, clearsComposer: Bool) async {
+        try? store.enqueue(item)
+        defer {
+            try? store.dequeue(id: item.id)
+            recordings[item.id] = nil
+        }
+        switch item.content {
+        case let .message(text, files, replyToId):
+            await sendOptimistically(text: text, attachments: files.map(\.attachment), replyToId: replyToId, clearsComposer: clearsComposer) { [weak self, adapter] message in
+                let id = try await adapter.send(message)
+                await self?.afterSend(id)
+                return id
+            }
+        case let .sticker(sticker, replyToId):
+            guard let sending = adapter as? any ChatStickerSending else { return }
+            await sendOptimistically(text: "", attachment: nil, sticker: sticker, replyToId: replyToId) { [weak self] in
+                let id = try await sending.send(sticker: sticker, replyToId: replyToId)
+                await self?.afterSend(id)
+                return id
+            }
+        case let .voice(audio, fileExtension, duration, waveform, replyToId):
+            guard let voice = recordings[item.id] ?? Self.voiceNote(id: item.id, audio: audio, fileExtension: fileExtension, duration: duration, waveform: waveform) else { return }
+            await sendOptimistically(text: "", attachment: nil, voice: voice, replyToId: replyToId) { [weak self, adapter] in
+                let id: String? = if let sending = adapter as? any ChatVoiceSending {
+                    try await sending.send(voice: voice, replyToId: replyToId)
+                } else {
+                    try await adapter.send(ChatOutgoing(text: "", attachment: ChatVoiceFile.attachment(for: voice), replyToId: replyToId))
+                }
+                await self?.afterSend(id)
+                return id
+            }
+        }
+    }
+
+    /// The recording, written back to a file for the adapter (and the bubble's player) to read.
+    private static func voiceNote(id: String, audio: Data, fileExtension: String, duration: Double, waveform: [Double]) -> ChatVoiceNote? {
+        let url = FileManager.default.temporaryDirectory.appending(path: "\(id).\(fileExtension.isEmpty ? "m4a" : fileExtension)")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            guard (try? audio.write(to: url, options: .atomic)) != nil else { return nil }
+        }
+        return ChatVoiceNote(fileURL: url, duration: duration, waveform: waveform)
     }
 
     // MARK: Forwarding
@@ -691,7 +978,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
                     try await sendCopy(of: forward)
                 }
                 ChatKit.onEvent(.messageForwarded(network: network, from: forward.network, isNative: isNative, error: nil))
-                adapterDidChange()
+                await afterSend(id)
                 return id
             } catch {
                 ChatKit.onEvent(.messageForwarded(network: network, from: forward.network, isNative: isNative, error: error))
@@ -889,11 +1176,11 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         if avatarURL != info.avatarURL {
             avatarURL = info.avatarURL
         }
-        if hasEarlierMessages != adapter.hasEarlierMessages {
-            hasEarlierMessages = adapter.hasEarlierMessages
+        if hasEarlierMessages != window.hasEarlier {
+            hasEarlierMessages = window.hasEarlier
         }
-        if let windowing = adapter as? any ChatWindowing, hasLaterMessages != windowing.hasLaterMessages {
-            hasLaterMessages = windowing.hasLaterMessages
+        if hasLaterMessages != window.hasLater {
+            hasLaterMessages = window.hasLater
         }
         if let typing = adapter as? any ChatTyping, typingNames != typing.typingNames {
             typingNames = typing.typingNames
@@ -918,41 +1205,55 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             customEmojis = emojis.customEmojis
         }
         if let resolving = adapter as? any ChatReferenceResolving {
-            if referencedMessages != resolving.referencedMessages {
-                referencedMessages = resolving.referencedMessages
-            }
             if unavailableReferences != resolving.unavailableReferences {
                 unavailableReferences = resolving.unavailableReferences
             }
         }
+        let rendering = adapter.render(window.records)
+        resolveStoredReferences(of: rendering.messages)
         if let reporting = adapter as? any ChatReadReceipts {
             var latest: [String: ChatReceipt] = [:]
-            for message in adapter.messages where message.isOwn {
+            for message in rendering.messages where message.isOwn {
                 latest[message.id] = reporting.receipt(for: message)
             }
             if receipts != latest {
                 receipts = latest
             }
         }
-        guard !holdsHistory else { return }
-        publish(history: adapter.messages, reactions: adapter.reactions)
+        publish(history: rendering.messages, reactions: rendering.reactions)
         updateUnreadCount()
-        scheduleSnapshotSave()
+        scheduleStateSave()
     }
 
-    /// Saves shortly after changes while open, so the snapshot survives the app being killed in a chat.
-    private func scheduleSnapshotSave() {
-        guard isOpen else { return }
-        snapshotSaveTask?.cancel()
-        snapshotSaveTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled else { return }
-            self?.saveSnapshot()
+    /// Quoted messages outside the window that the store has, ahead of what the adapter resolves on the network.
+    private func resolveStoredReferences(of messages: [ChatMessage]) {
+        let shown = Set(messages.map(\.id))
+        let adapterResolved = (adapter as? any ChatReferenceResolving)?.referencedMessages ?? [:]
+        var resolved = adapterResolved
+        for id in Set(messages.compactMap(\.replyToId)) where !shown.contains(id) && resolved[id] == nil {
+            guard let record = try? store.record(id: id, chatKey: chatKey), record.relatesTo == nil else { continue }
+            let related = (try? store.related(to: [id], chatKey: chatKey)) ?? []
+            if let message = adapter.render([record] + related).messages.first(where: { $0.id == id }) {
+                resolved[id] = message
+            }
+        }
+        if referencedMessages != resolved {
+            referencedMessages = resolved
         }
     }
 
-    private func saveSnapshot() {
-        guard let snapshot = adapter.snapshot() else { return }
-        snapshotCache.save(data: snapshot, key: chatKey)
+    /// Saves shortly after changes while open, so the adapter's state survives the app being killed in a chat.
+    private func scheduleStateSave() {
+        guard isOpen else { return }
+        stateSaveTask?.cancel()
+        stateSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.saveState()
+        }
+    }
+
+    private func saveState() {
+        try? store.setState(adapter.state(), chatKey: chatKey)
     }
 }

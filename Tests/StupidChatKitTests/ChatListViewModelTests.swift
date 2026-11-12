@@ -39,27 +39,31 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertTrue(list.connections.allSatisfy { $0.error == nil })
     }
 
-    func testUnreadChatsLoadAheadOnceUntilTheyChange() async throws {
-        func unread(_ id: String, _ count: Int, minutesAgo: Double, muted: Bool = false) -> ChatSummary {
+    func testChatsLoadAheadUnmutedAndUnreadFirstOnceUntilTheyChange() async throws {
+        func unread(_ id: String, _ count: Int, minutesAgo: Double, muted: Bool = false, latest: String? = nil) -> ChatSummary {
             ChatSummary(id: id, network: .spotify, title: id, avatarURL: nil, preview: nil, timestamp: Date(timeIntervalSinceNow: -minutesAgo * 60),
-                        unreadCount: count, destination: .spotify(chatId: id), isMuted: muted)
+                        unreadCount: count, destination: .spotify(chatId: id), isMuted: muted, latestMessageId: latest)
         }
-        let provider = FakeProvider(network: .spotify, page: .init(chats: [unread("new", 2, minutesAgo: 1), unread("read", 0, minutesAgo: 2), unread("muted", 3, minutesAgo: 3, muted: true)], archived: []))
+        let provider = FakeProvider(network: .spotify, page: .init(chats: [
+            unread("read", 0, minutesAgo: 1), unread("new", 2, minutesAgo: 2), unread("muted", 3, minutesAgo: 3, muted: true),
+            unread("current", 1, minutesAgo: 4, latest: "stored"),
+        ], archived: []))
         let list = makeList([(provider, "spotify")])
         var prefetched: [String] = []
-        list.prefetcher = { chat in PrefetchingChat { prefetched.append(chat.id) } }
+        list.prefetcher = { chat in PrefetchingChat(isCurrent: chat.latestMessageId == "stored") { prefetched.append(chat.id) } }
         await list.load()
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(prefetched, ["spotify|new"], "only unread, unmuted chats")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(prefetched, ["spotify|new", "spotify|read", "spotify|muted"], "unmuted before muted, unread before read; current chats skip")
 
         await list.load()
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(prefetched, ["spotify|new"], "an unchanged row doesn't load again")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(prefetched.count, 3, "an unchanged row doesn't load again")
 
         provider.page = .init(chats: [unread("new", 3, minutesAgo: 0)], archived: [])
         await list.load()
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(prefetched, ["spotify|new", "spotify|new"], "a new message loads it again")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(prefetched.last, "spotify|new", "a new message loads it again")
+        XCTAssertEqual(prefetched.count, 4)
     }
 
     func testTwoAccountsListTheSameChatApart() async {
@@ -250,14 +254,20 @@ final class ChatListViewModelTests: XCTestCase {
 @MainActor
 private final class PrefetchingChat: ChatViewModel {
     private let onPrefetch: () -> Void
+    private let current: Bool
 
-    init(onPrefetch: @escaping () -> Void) {
+    init(isCurrent: Bool = false, onPrefetch: @escaping () -> Void) {
         self.onPrefetch = onPrefetch
+        current = isCurrent
         super.init(network: .spotify, chatKey: "test", title: "Chat", subtitle: "", canReply: false, draftStore: ChatDraftStore(defaults: UserDefaults(suiteName: "PrefetchingChat-\(UUID().uuidString)")!))
     }
 
     override func prefetch() async throws {
         onPrefetch()
+    }
+
+    override var isCurrent: Bool {
+        current
     }
 }
 

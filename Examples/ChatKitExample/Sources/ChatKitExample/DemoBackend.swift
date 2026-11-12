@@ -240,9 +240,8 @@ final class DemoChatAdapter: ChatReactionSending, ChatCustomEmojis, ChatAudioPre
     let pollInterval: Duration? = nil
     var onChange: (() -> Void)?
     let info: ChatInfo
-    private(set) var messages: [ChatMessage] = []
+    var history: ChatHistory?
     private(set) var reactions: [String: [ChatReaction]]
-    let hasEarlierMessages = false
     let acceptsReactions = true
     let customEmojis = DemoBackend.customEmojis
     let typingNames: [String]
@@ -251,6 +250,10 @@ final class DemoChatAdapter: ChatReactionSending, ChatCustomEmojis, ChatAudioPre
     private let chat: DemoBackend.Chat
     private var readCount: Int
     private var sentIds: Set<String> = []
+    /// The backend's messages by id, and their order; a real adapter decodes its records instead.
+    private var catalog: [String: ChatMessage] = [:]
+    private var order: [String: Int64] = [:]
+    private var version: Int64 = 0
 
     init(chatId: String) {
         chat = DemoBackend.chat(id: chatId)
@@ -262,21 +265,33 @@ final class DemoChatAdapter: ChatReactionSending, ChatCustomEmojis, ChatAudioPre
         info.avatarUserId = chat.id
         info.avatarURL = chat.avatarURL
         self.info = info
-    }
-
-    func loadNewest() async throws {
-        if messages.isEmpty {
-            messages = chat.messages(Date())
+        for (index, message) in chat.messages(Date()).enumerated() {
+            catalog[message.id] = message
+            order[message.id] = Int64(index)
         }
     }
 
-    func loadEarlier() async throws {}
+    private func record(_ message: ChatMessage) -> ChatRecord {
+        catalog[message.id] = message
+        version += 1
+        return ChatRecord(id: message.id, sortKey: order[message.id] ?? 0, version: version, data: Data(message.id.utf8))
+    }
+
+    func fetch(_: ChatPageRequest) async throws -> ChatPage {
+        let messages = catalog.values.sorted { order[$0.id, default: 0] < order[$1.id, default: 0] }
+        return ChatPage(records: messages.map(record), earlier: nil)
+    }
+
+    func render(_ records: [ChatRecord]) -> ChatRendering {
+        ChatRendering(messages: records.compactMap { catalog[$0.id] }, reactions: reactions)
+    }
 
     func send(_ message: ChatOutgoing) async throws -> String? {
         try await Task.sleep(for: .milliseconds(600))
         let id = UUID().uuidString
-        messages.append(ChatMessage(id: id, sender: DemoBackend.you, timestamp: Date(), text: message.text, replyToId: message.replyToId, isOwn: true))
+        order[id] = (order.values.max() ?? 0) + 1
         sentIds.insert(id)
+        try history?.write([record(ChatMessage(id: id, sender: DemoBackend.you, timestamp: Date(), text: message.text, replyToId: message.replyToId, isOwn: true))])
         return id
     }
 
@@ -285,12 +300,12 @@ final class DemoChatAdapter: ChatReactionSending, ChatCustomEmojis, ChatAudioPre
     }
 
     func isAfterReadPosition(_ message: ChatMessage) -> Bool {
-        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return false }
+        guard let index = order[message.id] else { return false }
         return index >= readCount
     }
 
     func markRead(upTo message: ChatMessage) -> (@MainActor () async throws -> Void)? {
-        guard let index = messages.firstIndex(where: { $0.id == message.id }), index >= readCount else { return nil }
+        guard let index = order[message.id].map(Int.init), index >= readCount else { return nil }
         readCount = index + 1
         // A real backend sends the read position here.
         return {}
@@ -332,9 +347,8 @@ final class DemoChatAdapter: ChatReactionSending, ChatCustomEmojis, ChatAudioPre
     }
 
     func edit(_ messageId: String, text: String) async throws {
-        guard let index = messages.firstIndex(where: { $0.id == messageId }) else { return }
-        let old = messages[index]
-        messages[index] = ChatMessage(id: old.id, sender: old.sender, timestamp: old.timestamp, text: text, embeds: old.embeds, replyToId: old.replyToId, isOwn: true, isEdited: true)
+        guard let old = catalog[messageId] else { return }
+        try history?.write([record(ChatMessage(id: old.id, sender: old.sender, timestamp: old.timestamp, text: text, embeds: old.embeds, replyToId: old.replyToId, isOwn: true, isEdited: true))])
     }
 
     /// Voice messages play a sample from the web.
@@ -342,9 +356,9 @@ final class DemoChatAdapter: ChatReactionSending, ChatCustomEmojis, ChatAudioPre
         URL(string: previewId)
     }
 
-    func snapshot() -> Data? {
+    func state() -> Data? {
         nil
     }
 
-    func restore(snapshot _: Data) {}
+    func restore(state _: Data) {}
 }

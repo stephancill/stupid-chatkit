@@ -6,12 +6,14 @@ import XCTest
 @MainActor
 final class AdapterChatViewModelTests: XCTestCase {
     private var directory: URL!
+    private var store: ChatStore!
 
     override func setUp() {
         directory = FileManager.default.temporaryDirectory.appending(path: "AdapterChatViewModelTests-\(UUID().uuidString)")
     }
 
     override func tearDown() {
+        store = nil
         try? FileManager.default.removeItem(at: directory)
     }
 
@@ -46,7 +48,7 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
-    func testTheSnapshotRestoresWithItsDividerInTheFirstRender() async {
+    func testStoredMessagesShowWithTheirDividerInTheFirstRender() async {
         let adapter = FakeAdapter()
         adapter.readUpTo = 1
         adapter.pages = [[message(1), message(2), message(3)]]
@@ -57,23 +59,92 @@ final class AdapterChatViewModelTests: XCTestCase {
         let reopened = FakeAdapter()
         reopened.readUpTo = 1
         let chat = makeChat(reopened)
-        XCTAssertEqual(chat.messages.map(\.id), ["1", "2", "3"], "opens with the snapshot")
+        XCTAssertEqual(chat.messages.map(\.id), ["1", "2", "3"], "opens with the stored messages")
         XCTAssertEqual(chat.firstUnreadMessageId, "2")
         XCTAssertEqual(chat.unreadCount, 2)
     }
 
-    func testMessagesChangedMidLoadShowWithTheirDividerOnceTheLoadEnds() async {
+    func testAChatWhoseStoredMessagesAreCurrentFetchesNothing() async {
         let adapter = FakeAdapter()
-        adapter.readUpTo = 1
         adapter.pages = [[message(1), message(2), message(3)]]
-        let chat = makeChat(adapter)
-        var shownMidLoad: [String]?
-        adapter.midLoad = { shownMidLoad = chat.messages.map(\.id) }
+        let first = makeChat(adapter)
+        await first.connect()
+        first.disconnect()
+
+        let reopened = FakeAdapter()
+        let chat = makeChat(reopened)
+        chat.latestMessageId = "3"
         await chat.connect()
-        XCTAssertEqual(shownMidLoad, [], "held back until the divider can be placed with them")
+        XCTAssertEqual(reopened.fetches, [], "the store holds the chat's latest message")
         XCTAssertEqual(chat.messages.map(\.id), ["1", "2", "3"])
-        XCTAssertEqual(chat.firstUnreadMessageId, "2")
         chat.disconnect()
+
+        let behind = FakeAdapter()
+        behind.pages = [[message(3), message(4)]]
+        let stale = makeChat(behind)
+        stale.latestMessageId = "4"
+        await stale.connect()
+        XCTAssertEqual(behind.fetches, [.newest])
+        XCTAssertEqual(stale.messages.map(\.id), ["1", "2", "3", "4"], "the newest page joins the stored ones")
+        stale.disconnect()
+    }
+
+    func testANewestPageAboveAGapShowsTheNewestMessages() async {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2)]]
+        let first = makeChat(adapter)
+        await first.connect()
+        first.disconnect()
+
+        let reopened = FakeAdapter()
+        reopened.pages = [[message(10), message(11)]]
+        reopened.earlierPages = [[message(3), message(4), message(5), message(6), message(7), message(8), message(9)], [message(1), message(2)]]
+        let chat = makeChat(reopened)
+        chat.latestMessageId = "11"
+        XCTAssertEqual(chat.messages.map(\.id), ["1", "2"], "stored messages show at once")
+        await chat.connect()
+        XCTAssertEqual(chat.messages.map(\.id), ["10", "11"], "the newest messages, not what's below the gap")
+        XCTAssertTrue(chat.hasEarlierMessages)
+        await chat.loadEarlier()
+        XCTAssertEqual(reopened.fetches, [.newest, .before(ChatCursor("earlier"))])
+        XCTAssertEqual(chat.messages.map(\.id), (3 ... 11).map(String.init))
+        await chat.loadEarlier()
+        XCTAssertEqual(chat.messages.map(\.id), (1 ... 11).map(String.init), "the gap closed, joining the stored messages")
+        XCTAssertFalse(chat.hasEarlierMessages, "the stored chunk started the chat")
+        chat.disconnect()
+    }
+
+    func testMessagesSentBeforeConnectingGoOnceConnected() async {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1)]]
+        let chat = makeChat(adapter)
+        chat.draft = "Hello"
+        await chat.send()
+        XCTAssertEqual(chat.draft, "", "the composer is free at once")
+        XCTAssertEqual(chat.messages.last?.text, "Hello")
+        XCTAssertTrue(chat.messages.last?.isSending ?? false)
+        XCTAssertTrue(adapter.sent.isEmpty)
+        await chat.connect()
+        XCTAssertEqual(adapter.sent.map(\.text), ["Hello"])
+        XCTAssertEqual(chat.messages.map(\.id), ["1", "sent-1"])
+        chat.disconnect()
+    }
+
+    func testAQueuedMessageSurvivesTheChatClosing() async {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1)]]
+        let chat = makeChat(adapter)
+        chat.draft = "Later"
+        await chat.send()
+
+        let reopened = FakeAdapter()
+        reopened.pages = [[message(1)]]
+        let again = makeChat(reopened)
+        XCTAssertEqual(again.messages.last?.text, "Later", "still waiting to send")
+        await again.connect()
+        XCTAssertEqual(reopened.sent.map(\.text), ["Later"])
+        again.disconnect()
+        _ = chat
     }
 
     func testAdapterChangesOutsideCallsReachTheScreen() async {
@@ -729,10 +800,13 @@ final class AdapterChatViewModelTests: XCTestCase {
 
     private func makeChat(_ adapter: FakeAdapter) -> AdapterChatViewModel<FakeAdapter> {
         let suite = "AdapterChatViewModelTests-\(UUID().uuidString)"
+        if store == nil {
+            store = try! ChatStore(url: directory.appending(path: "store.sqlite"))
+        }
         return AdapterChatViewModel(
             adapter: adapter,
             accountId: "test",
-            snapshotCache: ChatSnapshotCache(directory: directory),
+            store: store,
             draftStore: ChatDraftStore(defaults: UserDefaults(suiteName: suite)!),
         )
     }
@@ -746,7 +820,8 @@ private func said(_ id: Int, _ text: String) -> ChatMessage {
     ChatMessage(id: "\(id)", sender: ChatUser(id: "ada", name: "Ada", avatarURL: nil), timestamp: Date(timeIntervalSince1970: Double(id)), text: text, isOwn: false)
 }
 
-/// Read position is a message id, like Telegram's.
+/// Read position is a message id, like Telegram's. The fake's network holds `catalog`: each newest fetch returns
+/// the next of `pages` (or the last one again), and earlier fetches return `earlierPages` in turn.
 @MainActor
 private class FakeAdapter: ChatAdapter {
     let network = ChatNetwork.telegram
@@ -756,40 +831,91 @@ private class FakeAdapter: ChatAdapter {
     let pollInterval: Duration? = .seconds(60)
     var onChange: (() -> Void)?
     var info = ChatInfo(title: "Fake", subtitle: "Test")
-    private(set) var messages: [ChatMessage] = []
+    var history: ChatHistory?
     var reactions: [String: [ChatReaction]] = [:]
-    var hasEarlierMessages = false
 
     var pages: [[ChatMessage]] = []
-    /// Runs partway through `loadNewest`, after an `onChange`, as networks that publish while loading do.
-    var midLoad: (@MainActor () async -> Void)?
+    var earlierPages: [[ChatMessage]] = []
     var error: Error?
     var readUpTo = 0
     private(set) var sent: [ChatOutgoing] = []
     private(set) var readMarks: [Int] = []
+    private(set) var fetches: [ChatPageRequest] = []
+    /// The network's copy of each message.
+    private(set) var catalog: [String: ChatMessage] = [:]
+    private var newest: [ChatMessage]?
+    private var sortKeys: [String: Int64] = [:]
+    private var nextSortKey: Int64 = 1_000_000
+    private var version: Int64 = 0
 
-    func loadNewest() async throws {
+    /// The network's messages, oldest first.
+    var messages: [ChatMessage] {
+        catalog.values.sorted { sortKey($0.id) < sortKey($1.id) }
+    }
+
+    func sortKey(_ id: String) -> Int64 {
+        if let key = sortKeys[id] {
+            return key
+        }
+        let key: Int64
+        if let numeric = Int64(id) {
+            key = numeric
+        } else {
+            nextSortKey += 1
+            key = nextSortKey
+        }
+        sortKeys[id] = key
+        return key
+    }
+
+    func record(_ message: ChatMessage) -> ChatRecord {
+        catalog[message.id] = message
+        version += 1
+        return ChatRecord(id: message.id, sortKey: sortKey(message.id), version: version, data: Data(message.id.utf8))
+    }
+
+    func fetch(_ request: ChatPageRequest) async throws -> ChatPage {
+        fetches.append(request)
         if let error {
             throw error
         }
         info.title = "Loaded"
-        if !pages.isEmpty {
-            messages = pages.removeFirst()
-        }
-        if let midLoad {
-            onChange?()
-            await midLoad()
+        switch request {
+        case .newest:
+            if !pages.isEmpty {
+                newest = pages.removeFirst()
+            }
+            let page = newest ?? []
+            return ChatPage(records: page.map(record), earlier: earlierPages.isEmpty ? nil : ChatCursor("earlier"))
+        case .before:
+            guard !earlierPages.isEmpty else { return ChatPage(records: [], earlier: nil) }
+            let page = earlierPages.removeFirst()
+            return ChatPage(records: page.map(record), earlier: earlierPages.isEmpty ? nil : ChatCursor("earlier"))
+        case .after, .around:
+            return ChatPage(records: [], earlier: nil)
         }
     }
 
-    func loadEarlier() async throws {}
+    func render(_ records: [ChatRecord]) -> ChatRendering {
+        let messages = records.filter { $0.relatesTo == nil }.map { catalog[$0.id] ?? message(Int($0.id) ?? 0) }
+        let ids = Set(messages.map(\.id))
+        return ChatRendering(messages: messages, reactions: reactions.filter { ids.contains($0.key) })
+    }
 
+    /// A message arriving outside a page, as a pushed update or the network's copy of a sent one.
     func append(_ message: ChatMessage) {
-        messages.append(message)
+        try? history?.write([record(message)])
     }
 
+    /// The network's messages change to these: missing ones were deleted, the rest written again.
     func replace(with messages: [ChatMessage]) {
-        self.messages = messages
+        let ids = Set(messages.map(\.id))
+        let deleted = catalog.keys.filter { !ids.contains($0) }
+        for id in deleted {
+            catalog[id] = nil
+        }
+        try? history?.delete(ids: deleted)
+        try? history?.write(messages.map(record))
     }
 
     /// Sends after this many succeed fail.
@@ -801,7 +927,7 @@ private class FakeAdapter: ChatAdapter {
         }
         sent.append(message)
         let id = "sent-\(sent.count)"
-        messages.append(ChatMessage(id: id, sender: ChatUser(id: "you", name: "You", avatarURL: nil), timestamp: Date(), text: message.text, isOwn: true))
+        append(ChatMessage(id: id, sender: ChatUser(id: "you", name: "You", avatarURL: nil), timestamp: Date(), text: message.text, isOwn: true))
         return id
     }
 
@@ -819,17 +945,17 @@ private class FakeAdapter: ChatAdapter {
         []
     }
 
-    private struct Snapshot: Codable {
-        let ids: [Int]
+    private struct State: Codable {
+        let readUpTo: Int
     }
 
-    func snapshot() -> Data? {
-        try? JSONEncoder().encode(Snapshot(ids: messages.compactMap { Int($0.id) }))
+    func state() -> Data? {
+        try? JSONEncoder().encode(State(readUpTo: readUpTo))
     }
 
-    func restore(snapshot data: Data) {
-        guard let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
-        messages = snapshot.ids.map { message($0) }
+    func restore(state data: Data) {
+        guard let state = try? JSONDecoder().decode(State.self, from: data) else { return }
+        readUpTo = state.readUpTo
     }
 }
 
@@ -854,34 +980,25 @@ private final class FakeLiveAdapter: FakeAdapter, ChatLiveUpdating, ChatReferenc
 
     func push(_ pushed: ChatMessage) {
         append(pushed)
-        onChange?()
     }
 }
 
 /// Messages 1–100 exist on the "network"; a window holds the message and the five after it.
 @MainActor
 private final class FakeWindowingAdapter: FakeAdapter, ChatWindowing, ChatCommanding {
-    private(set) var hasLaterMessages = false
     private(set) var commands: [String] = []
-    private var latest: [ChatMessage] = []
 
-    override func loadNewest() async throws {
-        try await super.loadNewest()
-        latest = messages
-    }
-
-    func loadLater() async throws {}
-
-    func showWindow(around messageId: String) async throws -> Bool {
-        guard let id = Int(messageId), (1 ... 100).contains(id) else { return false }
-        replace(with: (id ... id + 5).map { message($0) })
-        hasLaterMessages = true
-        return true
-    }
-
-    func showLatest() async throws {
-        replace(with: latest)
-        hasLaterMessages = false
+    override func fetch(_ request: ChatPageRequest) async throws -> ChatPage {
+        switch request {
+        case let .around(messageId):
+            guard let id = Int(messageId), (1 ... 100).contains(id) else { return ChatPage(records: [], earlier: nil) }
+            return ChatPage(records: (id ... id + 5).map { record(message($0)) }, earlier: ChatCursor(String(id)), later: ChatCursor(String(id + 5)))
+        case let .after(cursor):
+            let id = (Int(cursor.value) ?? 0) + 1
+            return ChatPage(records: (id ... id + 5).map { record(message($0)) }, earlier: ChatCursor(String(id)), later: ChatCursor(String(id + 5)))
+        default:
+            return try await super.fetch(request)
+        }
     }
 
     func isCommand(_ text: String) -> Bool {
@@ -1037,22 +1154,11 @@ private final class FakeReceiptsAdapter: FakeAdapter, ChatReadReceipts {
 @MainActor
 private final class FakeUnseenReactionsAdapter: FakeAdapter, ChatUnseenReactions {
     var unseen: [String] = []
-    var earlierPages: [[ChatMessage]] = []
     private var pending: Set<String> = []
     private(set) var seenSends: [[String]] = []
 
     var unseenReactionMessageIds: [String] {
         unseen
-    }
-
-    override var hasEarlierMessages: Bool {
-        get { !earlierPages.isEmpty }
-        set {}
-    }
-
-    override func loadEarlier() async throws {
-        guard !earlierPages.isEmpty else { return }
-        replace(with: earlierPages.removeFirst() + messages)
     }
 
     func markReactionsSeen(on messageIds: Set<String>) -> (@MainActor () async throws -> Void)? {
