@@ -456,6 +456,12 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         }
     }
 
+    /// Loads ahead now and returns once the rows due have loaded, such as in a background refresh.
+    public func loadAhead() async {
+        schedulePrefetch()
+        await prefetchTask?.value
+    }
+
     private func schedulePrefetch() {
         guard prefetcher != nil else { return }
         guard prefetchTask == nil else {
