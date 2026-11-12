@@ -98,4 +98,26 @@ final class ChatMessageCellTests: XCTestCase {
         XCTAssertFalse(ChatMessageCell.postDate(now.addingTimeInterval(-3 * 86400), now: now, calendar: calendar).contains("20"), "no year within this year")
         XCTAssertTrue(ChatMessageCell.postDate(now.addingTimeInterval(-400 * 86400), now: now, calendar: calendar).contains("2025"))
     }
+
+    func testPostCountsReadLikeXs() {
+        let counts = [0, 999, 1000, 1250, 1299, 12345, 123_456, 999_999, 3_450_000, 2_100_000_000]
+        XCTAssertEqual(counts.map { ChatMessageCell.compactCount($0, locale: Locale(identifier: "en_US")) }, ["0", "999", "1K", "1.2K", "1.2K", "12K", "123K", "999K", "3.4M", "2.1B"])
+    }
+
+    /// Counts add a row under the post; with none to show, there is no row.
+    func testPostCountsAddARow() {
+        let width: CGFloat = 390
+        func height(_ counts: ChatPost.Counts?) -> CGFloat {
+            let post = ChatPost(authorName: "Ada", text: "Hello", counts: counts)
+            let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: width, height: 44))
+            cell.configure(
+                message: ChatMessage(id: "p", sender: ChatUser(id: "ada", name: "Ada", avatarURL: nil), timestamp: Date(), text: nil, embeds: [.post(post)], isOwn: false),
+                layout: ChatBubbleLayout(isOwn: false, isSystem: false, showsName: false, showsAvatar: true, startsGroup: true),
+                reply: nil, avatarURL: nil, body: nil, embeds: [.post(post)], reactions: [], actions: .init(), availableWidth: width,
+            )
+            return fittedHeight(of: cell, width: width)
+        }
+        XCTAssertGreaterThan(height(ChatPost.Counts(replies: 3, reposts: 10, likes: 1250)), height(nil) + 10)
+        XCTAssertEqual(height(ChatPost.Counts(replies: nil, reposts: nil, likes: nil)), height(nil))
+    }
 }

@@ -1448,7 +1448,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
 
     /// A post, drawn as its network shows one in a frame: the author's picture, name, badge, handle and time over
     /// the text (twelve lines until tapped open), its media to page through, and the post it quotes in a frame of
-    /// its own. The author opens the post.
+    /// its own, then its replies, reposts and likes. The author opens the post.
     private func postCard(_ post: ChatPost, index: Int) -> UIView {
         let isExpanded = actions.isEmbedExpanded(index)
         var rows: [UIView] = [postHeader(post, compact: false)]
@@ -1464,7 +1464,57 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         if let quoted = post.quoted {
             rows.append(quotedPost(quoted, index: index))
         }
+        if let counts = post.counts.flatMap(postCounts) {
+            rows.append(counts)
+        }
         return postFrame(rows, cornerRadius: 12)
+    }
+
+    /// Replies, reposts and likes as networks show them: a symbol beside each count, compact ("1.2K").
+    private func postCounts(_ counts: ChatPost.Counts) -> UIView? {
+        let items: [(symbol: String, count: Int?, name: String)] = [
+            ("bubble.left", counts.replies, "replies"),
+            ("arrow.2.squarepath", counts.reposts, "reposts"),
+            ("heart", counts.likes, "likes"),
+        ]
+        let shown = items.compactMap { item in item.count.map { (item.symbol, $0, item.name) } }
+        guard !shown.isEmpty else { return nil }
+        let color = isOwn ? UIColor.white.withAlphaComponent(0.8) : .secondaryLabel
+        let font = UIFont.preferredFont(forTextStyle: .footnote)
+        let views: [UIView] = shown.map { symbol, count, _ in
+            let image = UIImageView(image: UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small)))
+            image.tintColor = color
+            image.setContentHuggingPriority(.required, for: .horizontal)
+            let label = UILabel()
+            label.text = Self.compactCount(count)
+            label.font = font
+            label.adjustsFontForContentSizeCategory = true
+            label.textColor = color
+            let item = UIStackView(arrangedSubviews: [image, label])
+            item.spacing = 4
+            item.alignment = .center
+            return item
+        }
+        let row = UIStackView(arrangedSubviews: views + [UIView()])
+        row.spacing = 20
+        row.alignment = .center
+        row.isAccessibilityElement = true
+        row.accessibilityLabel = shown.map { _, count, name in "\(count) \(name)" }.joined(separator: ", ")
+        return row
+    }
+
+    /// As X shows counts: "999", "1.2K", "12K", "123K", "3.4M"; a decimal only below ten, rounded down.
+    static func compactCount(_ count: Int, locale: Locale = .current) -> String {
+        let (value, suffix): (Double, String) = switch count {
+        case ..<1000: (Double(count), "")
+        case ..<1_000_000: (Double(count) / 1000, "K")
+        case ..<1_000_000_000: (Double(count) / 1_000_000, "M")
+        default: (Double(count) / 1_000_000_000, "B")
+        }
+        guard !suffix.isEmpty else { return "\(count)" }
+        let shown = value < 10 ? (value * 10).rounded(.down) / 10 : value.rounded(.down)
+        let number = shown.formatted(.number.precision(.fractionLength(0 ... 1)).locale(locale))
+        return number + suffix
     }
 
     /// The quoted post: a smaller header, four lines of text and its first photo or video beside them.

@@ -154,8 +154,23 @@ public struct ChatPost: Hashable, Sendable {
     public let link: URL?
     /// The network the post is from, whose icon (`ChatKit.networkIcon`) sits in the card's top corner.
     public let network: ChatNetwork?
+    /// Replies, reposts and likes, shown along the bottom of the card; nil when the network doesn't say.
+    public let counts: Counts?
     /// Held in an array, since a struct can't contain itself.
     private let quotedPosts: [ChatPost]
+
+    /// A post's engagement; a count the network leaves out isn't shown.
+    public struct Counts: Hashable, Sendable {
+        public let replies: Int?
+        public let reposts: Int?
+        public let likes: Int?
+
+        public init(replies: Int?, reposts: Int?, likes: Int?) {
+            self.replies = replies
+            self.reposts = reposts
+            self.likes = likes
+        }
+    }
 
     /// The post this one quotes, drawn inside it.
     public var quoted: ChatPost? {
@@ -172,9 +187,11 @@ public struct ChatPost: Hashable, Sendable {
         media: [ChatEmbed] = [],
         link: URL? = nil,
         network: ChatNetwork? = nil,
+        counts: Counts? = nil,
         quoted: ChatPost? = nil,
     ) {
         self.network = network
+        self.counts = counts
         self.authorName = authorName
         self.authorHandle = authorHandle
         self.authorAvatarURL = authorAvatarURL
