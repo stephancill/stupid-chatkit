@@ -72,6 +72,8 @@ public final class ChatStore: @unchecked Sendable {
     private let lock = NSLock()
     private let launchId = UUID().uuidString
     private var epochs: [String: Int] = [:]
+    /// Accounts whose every chat the app keeps current from a live connection (`setFollowed`).
+    private var followed: Set<String> = []
     @MainActor private var observers: [String: [UUID: @MainActor () -> Void]] = [:]
     @MainActor private var allObservers: [UUID: @MainActor (Set<String>?) -> Void] = [:]
     private let darwinName: String?
@@ -154,6 +156,30 @@ public final class ChatStore: @unchecked Sendable {
     /// or a newer list row shows they are.
     public func raiseEpoch(accountId: String) {
         locked { epochs[accountId, default: 0] += 1 }
+    }
+
+    /// The app's own sync writes the account's live updates for every chat into the store, open or not, from now
+    /// (`true`) or no longer (`false`, such as when its connection closed). Either way the epoch rises: what
+    /// arrived before a connection opened, or after it closed, may be missing.
+    public func setFollowed(_ isFollowed: Bool, accountId: String) {
+        locked {
+            epochs[accountId, default: 0] += 1
+            if isFollowed {
+                followed.insert(accountId)
+            } else {
+                followed.remove(accountId)
+            }
+        }
+    }
+
+    /// A chat stopped following its updates: unless the app's sync keeps the account current, its stored
+    /// messages may fall behind.
+    func chatStoppedFollowing(accountId: String) {
+        locked {
+            if !followed.contains(accountId) {
+                epochs[accountId, default: 0] += 1
+            }
+        }
     }
 
     // MARK: Writing

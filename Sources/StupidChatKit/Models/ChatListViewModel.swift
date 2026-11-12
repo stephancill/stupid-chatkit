@@ -180,6 +180,12 @@ public struct ChatConnectionStatus: Identifiable, Equatable, Sendable {
     public let error: String?
 }
 
+enum ChatListPrefetch {
+    /// A busy chat loads ahead at most this often, so a group's every message isn't a fetch; opening it fetches
+    /// what's newer. Tests shorten it.
+    nonisolated(unsafe) static var interval: TimeInterval = 20
+}
+
 /// Every chat across every account's chat networks, newest first.
 @MainActor
 public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>: ObservableObject {
@@ -226,6 +232,13 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     static var prefetchConcurrency: Int {
         3
     }
+
+    static var prefetchInterval: TimeInterval {
+        ChatListPrefetch.interval
+    }
+
+    /// When each row last loaded ahead.
+    private var prefetchedAt: [String: Date] = [:]
 
     /// The rows to keep loaded, in the order they load.
     static func prefetchOrder(_ chats: [Summary]) -> [Summary] {
@@ -464,10 +477,16 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         var due: [(key: String, viewModel: ChatViewModel)] = []
         for chat in Self.prefetchOrder(chats) {
             let key = "\(chat.id)|\(chat.latestMessageId ?? "")|\(chat.timestamp?.timeIntervalSince1970 ?? 0)|\(chat.unreadCount)"
-            guard !prefetched.contains(key), let viewModel = prefetcher?(chat) else { continue }
+            guard !prefetched.contains(key) else { continue }
+            if let last = prefetchedAt[chat.id], Date().timeIntervalSince(last) < Self.prefetchInterval {
+                retryPrefetch(after: Self.prefetchInterval - Date().timeIntervalSince(last))
+                continue
+            }
+            guard let viewModel = prefetcher?(chat) else { continue }
             prefetched.insert(key)
             viewModel.latestMessageId = chat.latestMessageId
             guard !viewModel.isCurrent else { continue }
+            prefetchedAt[chat.id] = Date()
             due.append((key, viewModel))
         }
         let models = due.map(\.viewModel)
@@ -479,6 +498,18 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
             for load in loads {
                 await load.value
             }
+        }
+    }
+
+    private var retryTask: Task<Void, Never>?
+
+    /// Loads ahead again once rows held back by `prefetchInterval` may go.
+    private func retryPrefetch(after delay: TimeInterval) {
+        guard retryTask == nil else { return }
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(delay, 1)))
+            self?.retryTask = nil
+            self?.schedulePrefetch()
         }
     }
 

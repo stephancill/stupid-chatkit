@@ -566,9 +566,9 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         isOpen = false
         stopPolling()
         (adapter as? any ChatLiveUpdating)?.stopFollowing()
-        // Nothing follows or polls the chat from here, so its stored messages count as current only once a fetch or
-        // its Chats row's latest message says so.
-        store.raiseEpoch(accountId: accountId)
+        // Nothing follows or polls the chat from here, unless the app's sync does, so its stored messages count as
+        // current only once a fetch or its Chats row's latest message says so.
+        store.chatStoppedFollowing(accountId: accountId)
         stateSaveTask?.cancel()
         saveState()
     }

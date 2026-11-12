@@ -49,6 +49,8 @@ final class ChatListViewModelTests: XCTestCase {
             unread("current", 1, minutesAgo: 4, latest: "stored"),
         ], archived: []))
         let list = makeList([(provider, "spotify")])
+        ChatListPrefetch.interval = 0
+        defer { ChatListPrefetch.interval = 20 }
         var prefetched: [String] = []
         list.prefetcher = { chat in PrefetchingChat(isCurrent: chat.latestMessageId == "stored") { prefetched.append(chat.id) } }
         await list.load()
