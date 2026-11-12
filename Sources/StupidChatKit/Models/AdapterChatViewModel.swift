@@ -159,6 +159,12 @@ public final class ChatHistory {
         self.chatKey = chatKey
     }
 
+    /// Stores a newest page the adapter fetched itself, such as a refresh after a pushed update that names no
+    /// message (`ChatStore.apply`).
+    public func apply(newest page: ChatPage) throws {
+        try store.apply(page, for: .newest, chatKey: chatKey)
+    }
+
     /// Stores records that arrived outside a page (`ChatStore.write`).
     public func write(_ records: [ChatRecord]) throws {
         try store.write(records, chatKey: chatKey)
@@ -487,6 +493,8 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             live.onError = { [weak self] error in self?.errorMessage = error.localizedDescription }
             live.onCatchUp = { [weak self] in
                 guard let self, isOpen else { return }
+                // Updates may have been missed, so stored messages stop counting as current until a fetch.
+                store.raiseEpoch(accountId: accountId)
                 Task { await self.poll() }
             }
         }
@@ -558,6 +566,9 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         isOpen = false
         stopPolling()
         (adapter as? any ChatLiveUpdating)?.stopFollowing()
+        // Nothing follows or polls the chat from here, so its stored messages count as current only once a fetch or
+        // its Chats row's latest message says so.
+        store.raiseEpoch(accountId: accountId)
         stateSaveTask?.cancel()
         saveState()
     }
@@ -584,6 +595,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     private func connectionLost(_ error: Error?) {
         isOpen = false
         stopPolling()
+        store.raiseEpoch(accountId: accountId)
         state = error.map { .disconnected($0.localizedDescription) } ?? .connecting
     }
 

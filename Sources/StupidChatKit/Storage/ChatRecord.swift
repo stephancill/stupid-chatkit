@@ -35,8 +35,8 @@ public struct ChatRecord: Hashable, Sendable {
         relatesTo == nil
     }
 
-    private static let encoder = PropertyListEncoder()
-    private static let decoder = PropertyListDecoder()
+    private static let encoder = JSONEncoder()
+    private static let decoder = JSONDecoder()
 }
 
 /// Where a network's paging continues, as the adapter writes it (a message id, a timestamp, an opaque token).
@@ -72,12 +72,16 @@ public struct ChatPage: Sendable {
     /// default the span of its message records. A network whose pages can carry records from outside it (such as
     /// an old message edited within the page's time) names it, and those records only update stored copies.
     public var covers: ClosedRange<Int64>?
+    /// Whether the page holds every message in `covers`, so a stored one it lacks was deleted. A network that
+    /// reports deletions as records of their own (tombstones) says false.
+    public var isComplete: Bool
 
-    public init(records: [ChatRecord], earlier: ChatCursor?, later: ChatCursor? = nil, covers: ClosedRange<Int64>? = nil) {
+    public init(records: [ChatRecord], earlier: ChatCursor?, later: ChatCursor? = nil, covers: ClosedRange<Int64>? = nil, isComplete: Bool = true) {
         self.records = records
         self.earlier = earlier
         self.later = later
         self.covers = covers
+        self.isComplete = isComplete
     }
 
     var coveredRange: ClosedRange<Int64>? {

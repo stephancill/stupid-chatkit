@@ -712,7 +712,7 @@ public final class ChatStore: @unchecked Sendable {
         }
 
         // Messages the page covers but doesn't hold were deleted.
-        if let covered {
+        if let covered, page.isComplete {
             let ids = Set(page.records.map(\.id))
             let stale = try database.rows(
                 "SELECT id FROM record WHERE chunk = ? AND relates IS NULL AND sort >= ? AND sort <= ?",
