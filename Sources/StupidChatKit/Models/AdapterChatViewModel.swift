@@ -122,7 +122,7 @@ public protocol ChatAdapter: AnyObject {
     /// mark that went through. The framework counts what the user read since as read itself.
     func isAfterReadPosition(_ message: ChatMessage) -> Bool
     /// What tells the network the user read up to the message, when that passes messages the network still counts
-    /// unread; `nil` when there is nothing to send. The framework sends it shortly after. It doesn't move the read
+    /// unread; `nil` when there is nothing to send. The framework sends it at once. It doesn't move the read
     /// position: the send does, once the network accepts it, so a mark that fails goes again with the next read.
     func markRead(upTo message: ChatMessage) -> (@MainActor () async throws -> Void)?
     func reactors(of emoji: String, on messageId: String) -> [ChatReactor]
@@ -1178,7 +1178,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
 
     // MARK: Read position
 
-    /// The count drops at once; the network hears shortly after. Before the chat connects, the newest message
+    /// The count drops and the network hears at once. Before the chat connects, the newest message
     /// seen waits for it: stored messages shown early stay unread until history places the divider.
     override public func markRead(upTo message: ChatMessage) {
         guard !isQuickLook else { return }

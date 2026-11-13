@@ -68,8 +68,24 @@ final class ChatViewModelTests: XCTestCase {
         for id in 1 ... 3 {
             viewModel.scheduleReadMarker { sent.append(id) }
         }
-        try await Task.sleep(for: .milliseconds(800))
-        XCTAssertEqual(sent, [3])
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(sent, [3], "sent at once")
+    }
+
+    func testReadMarksWaitForTheOneOnItsWayAndOnlyTheNewestGoes() async throws {
+        let viewModel = chat(restored: 0)
+        var sent: [Int] = []
+        viewModel.scheduleReadMarker {
+            try await Task.sleep(for: .milliseconds(100))
+            sent.append(1)
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        for id in 2 ... 4 {
+            viewModel.scheduleReadMarker { sent.append(id) }
+        }
+        XCTAssertEqual(sent, [])
+        await viewModel.sendPendingReadMarker()
+        XCTAssertEqual(sent, [1, 4])
     }
 
     func testPollingRunsUntilStopped() async throws {

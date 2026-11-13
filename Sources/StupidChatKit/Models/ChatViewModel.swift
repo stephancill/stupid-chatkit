@@ -765,6 +765,7 @@ public class ChatViewModel: ObservableObject {
     private let draftStore: ChatDraftStore
     private var pollTask: Task<Void, Never>?
     private var readSendTask: Task<Void, Never>?
+    private var nextReadMarker: (@MainActor () async throws -> Void)?
     private var reactionsSeenSendTask: Task<Void, Never>?
     private var searchJumpTask: Task<Void, Never>?
 
@@ -918,23 +919,28 @@ public class ChatViewModel: ObservableObject {
     /// After a failed mark, how long to wait before each retry; once they run out, the next read sends it again.
     var readMarkerRetryDelays: [Duration] = [.seconds(3), .seconds(15)]
 
-    /// Tells the network the new read position shortly after it moves, so reading a burst of messages sends one
-    /// mark: each call replaces the one still waiting.
+    /// Tells the network the new read position at once. While a mark is on its way, newer ones wait and only the
+    /// newest goes after it, so reading a burst of messages doesn't send one each; a newer mark also replaces the
+    /// retries of a failed one, since it covers it.
     func scheduleReadMarker(_ send: @escaping @MainActor () async throws -> Void) {
-        readSendTask?.cancel()
+        nextReadMarker = send
+        guard readSendTask == nil else { return }
         let retryDelays = readMarkerRetryDelays
         readSendTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
-            for retry in 0 ... retryDelays.count {
-                guard self != nil, !Task.isCancelled else { return }
-                do {
-                    try await send()
-                    return
-                } catch {
-                    guard retry < retryDelays.count else { return }
-                    try? await Task.sleep(for: retryDelays[retry])
+            while let send = self?.nextReadMarker {
+                self?.nextReadMarker = nil
+                for retry in 0 ... retryDelays.count {
+                    do {
+                        try await send()
+                        break
+                    } catch {
+                        guard retry < retryDelays.count else { break }
+                        try? await Task.sleep(for: retryDelays[retry])
+                        if self?.nextReadMarker != nil { break }
+                    }
                 }
             }
+            self?.readSendTask = nil
         }
     }
 
