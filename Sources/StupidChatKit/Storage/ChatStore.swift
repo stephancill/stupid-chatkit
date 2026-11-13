@@ -94,6 +94,10 @@ public final class ChatStore: @unchecked Sendable {
         try database.execute("PRAGMA journal_mode=WAL")
         try database.execute("PRAGMA synchronous=NORMAL")
         try database.execute(Self.schema)
+        let columns = try database.rows("PRAGMA table_info(record)", map: { $0.text(1) ?? "" })
+        if !columns.contains("provisional") {
+            try database.execute("ALTER TABLE record ADD COLUMN provisional INTEGER NOT NULL DEFAULT 0")
+        }
         try? (url as NSURL).setResourceValue(URLFileProtection.completeUntilFirstUserAuthentication, forKey: .fileProtectionKey)
         if let darwinNotificationName {
             listenForOtherProcesses(name: darwinNotificationName)
@@ -213,6 +217,40 @@ public final class ChatStore: @unchecked Sendable {
         didChange([chatKey])
     }
 
+    /// Shows records before their network's copy arrives, such as a message a push brought, which says nothing
+    /// about what came before it: they show after the newest stored messages, never count as stored history (the
+    /// chat still fetches), and give way to the network's copy, or to a page that covers them without them. Only
+    /// chats already stored take them, and records already stored are left.
+    public func writeProvisional(_ records: [ChatRecord], chatKey: String) throws {
+        let wrote = try locked {
+            try database.transaction { () -> Bool in
+                guard let chunk = try newest(chat: chatKey) else { return false }
+                var wrote = false
+                for record in records where record.isMessage {
+                    guard try storedRecord(id: record.id, chat: chatKey) == nil else { continue }
+                    try insert(record, chat: chatKey, chunk: chunk.id)
+                    try database.run("UPDATE record SET provisional = 1 WHERE chat = ? AND id = ?", [.text(chatKey), .text(record.id)])
+                    wrote = true
+                }
+                return wrote
+            }
+        }
+        if wrote {
+            didChange([chatKey])
+        }
+    }
+
+    /// Stored chats whose key ends with `suffix`, such as one chat's under each account that has it.
+    public func chatKeys(endingWith suffix: String) throws -> [String] {
+        try locked {
+            try database.rows("SELECT key FROM chat WHERE key LIKE ? ESCAPE '\\'", [.text("%" + Self.escapedLike(suffix))], map: { $0.text(0) ?? "" })
+        }
+    }
+
+    private static func escapedLike(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
+    }
+
     /// Removes records the network deleted.
     public func delete(ids: [String], chatKey: String) throws {
         guard !ids.isEmpty else { return }
@@ -266,7 +304,7 @@ public final class ChatStore: @unchecked Sendable {
             let epoch = "\(launchId):\(epochs[Self.accountId(of: chatKey), default: 0])"
             if let latestMessageId {
                 guard let stored = try database.first(
-                    "SELECT chunk FROM record WHERE chat = ? AND id = ?", [.text(chatKey), .text(latestMessageId)], map: { $0.int(0) },
+                    "SELECT chunk FROM record WHERE chat = ? AND id = ? AND provisional = 0", [.text(chatKey), .text(latestMessageId)], map: { $0.int(0) },
                 ), stored == chunk.id else { return false }
                 if chunk.epoch != epoch {
                     try database.run("UPDATE chunk SET epoch = ? WHERE id = ?", [.text(epoch), .int(chunk.id)])
@@ -543,7 +581,7 @@ public final class ChatStore: @unchecked Sendable {
             return chunk
         }
         guard let id = try database.first(
-            "SELECT chunk FROM record WHERE chat = ? AND relates IS NULL ORDER BY sort DESC LIMIT 1", [.text(chat)], map: { $0.int(0) },
+            "SELECT chunk FROM record WHERE chat = ? AND relates IS NULL AND provisional = 0 ORDER BY sort DESC LIMIT 1", [.text(chat)], map: { $0.int(0) },
         ) else { return nil }
         return try chunk(id: id)
     }
@@ -572,7 +610,7 @@ public final class ChatStore: @unchecked Sendable {
     }
 
     private func span(chunk: Int64) throws -> ClosedRange<Int64>? {
-        try database.first("SELECT MIN(sort), MAX(sort), COUNT(*) FROM record WHERE chunk = ? AND relates IS NULL", [.int(chunk)]) { row in
+        try database.first("SELECT MIN(sort), MAX(sort), COUNT(*) FROM record WHERE chunk = ? AND relates IS NULL AND provisional = 0", [.int(chunk)]) { row in
             row.int(2) == 0 ? nil : row.int(0) ... row.int(1)
         } ?? nil
     }
@@ -613,14 +651,16 @@ public final class ChatStore: @unchecked Sendable {
     /// Replaces a stored record with a copy of the same or a greater version, keeping its chunk; false when none is
     /// stored.
     private func replaceStored(_ record: ChatRecord, chat: String) throws -> Bool {
-        guard let version = try database.first(
-            "SELECT version FROM record WHERE chat = ? AND id = ?", [.text(chat), .text(record.id)], map: { $0.int(0) },
+        guard let (version, provisional) = try database.first(
+            "SELECT version, provisional FROM record WHERE chat = ? AND id = ?", [.text(chat), .text(record.id)], map: { ($0.int(0), $0.int(1) != 0) },
         ) else { return false }
-        if record.version >= version {
+        if record.version >= version || provisional {
             try database.run(
-                "UPDATE record SET sort = ?, relates = ?, version = ?, data = ? WHERE chat = ? AND id = ?",
+                "UPDATE record SET sort = ?, relates = ?, version = ?, data = ?, provisional = 0 WHERE chat = ? AND id = ?",
                 [.int(record.sortKey), .optional(record.relatesTo), .int(record.version), .blob(record.data), .text(chat), .text(record.id)],
             )
+        } else {
+            try database.run("UPDATE record SET provisional = 0 WHERE chat = ? AND id = ?", [.text(chat), .text(record.id)])
         }
         return true
     }
@@ -642,7 +682,7 @@ public final class ChatStore: @unchecked Sendable {
                 continue
             }
             let storedMax = try database.first(
-                "SELECT MAX(sort) FROM record WHERE chat = ? AND relates IS NULL", [.text(chat)], map: { $0.isNull(0) ? nil : $0.int(0) },
+                "SELECT MAX(sort) FROM record WHERE chat = ? AND relates IS NULL AND provisional = 0", [.text(chat)], map: { $0.isNull(0) ? nil : $0.int(0) },
             ) ?? nil
             guard storedMax.map({ record.sortKey > $0 }) ?? true else { continue }
             try database.run("UPDATE chunk SET reaches_newest = 0, later = NULL WHERE chat = ? AND reaches_newest = 1", [.text(chat)])
@@ -737,6 +777,19 @@ public final class ChatStore: @unchecked Sendable {
             target = database.lastInsertId
         }
 
+        if let covered {
+            // Provisional records the page covers are the network's to show now, wherever they were placed; a page
+            // that reaches the newest message covers everything after it too.
+            let ids = Set(page.records.map(\.id))
+            let upper = pageReachesNewest ? Int64.max : covered.upperBound
+            let provisional = try database.rows(
+                "SELECT id FROM record WHERE chat = ? AND provisional = 1 AND sort >= ? AND sort <= ?",
+                [.text(chat), .int(covered.lowerBound), .int(upper)], map: { $0.text(0) ?? "" },
+            ).filter { !ids.contains($0) }
+            for id in provisional {
+                try database.run("DELETE FROM record WHERE chat = ? AND id = ?", [.text(chat), .text(id)])
+            }
+        }
         // Messages the page covers but doesn't hold were deleted.
         if let covered, page.isComplete {
             let ids = Set(page.records.map(\.id))

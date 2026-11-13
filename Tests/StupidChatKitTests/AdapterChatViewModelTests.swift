@@ -89,6 +89,26 @@ final class AdapterChatViewModelTests: XCTestCase {
         stale.disconnect()
     }
 
+    func testReadingAStoredCurrentChatSendsTheReadPosition() async throws {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2), message(3)]]
+        let first = makeChat(adapter)
+        try await first.prefetch()
+
+        let reopened = FakeAdapter()
+        reopened.restore(state: try XCTUnwrap(adapter.state()))
+        let chat = makeChat(reopened)
+        chat.latestMessageId = "3"
+        await chat.connect()
+        XCTAssertEqual(reopened.fetches, [], "opened from the store")
+        XCTAssertEqual(chat.state, .connected)
+        XCTAssertEqual(chat.unreadCount, 3)
+        chat.markRead(upTo: message(3))
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(reopened.readMarks, [3])
+        chat.disconnect()
+    }
+
     func testANewestPageAboveAGapShowsTheNewestMessages() async {
         let adapter = FakeAdapter()
         adapter.pages = [[message(1), message(2)]]

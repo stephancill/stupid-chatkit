@@ -145,6 +145,36 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertEqual(try store.window(chatKey: "other|test:chat", at: .newest(count: 10)).records.count, 3)
     }
 
+    func testProvisionalRecordsShowUntilTheNetworksCopyAndNeverMakeAChatCurrent() throws {
+        try store.apply(page(1 ... 3), for: .newest, chatKey: chat)
+        try store.writeProvisional([record(9, text: "pushed")], chatKey: chat)
+        try store.writeProvisional([record(9)], chatKey: "account|test:unstored")
+        XCTAssertEqual(try newestIds(), ["1", "2", "3", "9"], "shown after the stored messages")
+        XCTAssertTrue(try store.window(chatKey: "account|test:unstored", at: .newest(count: 10)).records.isEmpty, "only stored chats take them")
+        store.raiseEpoch(accountId: "account")
+        XCTAssertFalse(try store.isCurrent(chatKey: chat, latestMessageId: "9"), "the chat still fetches")
+        try store.writeProvisional([record(2, text: "pushed")], chatKey: chat)
+        XCTAssertEqual(try store.record(id: "2", chatKey: chat)?.data, Data("2".utf8), "stored records are left")
+
+        try store.apply(page(3 ... 9), for: .newest, chatKey: chat)
+        XCTAssertEqual(try store.record(id: "9", chatKey: chat)?.data, Data("9".utf8), "the network's copy replaces it")
+        XCTAssertTrue(try store.isCurrent(chatKey: chat, latestMessageId: "9"))
+
+        try store.writeProvisional([record(12)], chatKey: chat)
+        try store.apply(page(10 ... 14).withoutRecord(12), for: .newest, chatKey: chat)
+        XCTAssertNil(try store.record(id: "12", chatKey: chat), "a page that covers it without it removes it")
+        try store.writeProvisional([record(99)], chatKey: chat)
+        try store.apply(page(13 ... 15), for: .newest, chatKey: chat)
+        XCTAssertNil(try store.record(id: "99", chatKey: chat), "nothing is newer than a newest page")
+    }
+
+    func testChatKeysMatchBySuffix() throws {
+        try store.apply(page(1 ... 1), for: .newest, chatKey: "a|telegram:user:1")
+        try store.apply(page(1 ... 1), for: .newest, chatKey: "b|telegram:user:1")
+        try store.apply(page(1 ... 1), for: .newest, chatKey: "a|telegram:user:12")
+        XCTAssertEqual(try Set(store.chatKeys(endingWith: "|telegram:user:1")), ["a|telegram:user:1", "b|telegram:user:1"])
+    }
+
     @MainActor
     func testWritesNotifyTheChatsObservers() throws {
         var count = 0
@@ -156,5 +186,11 @@ final class ChatStoreTests: XCTestCase {
         observation.cancel()
         try store.write([record(5)], chatKey: chat)
         XCTAssertEqual(count, 2)
+    }
+}
+
+private extension ChatPage {
+    func withoutRecord(_ id: Int) -> ChatPage {
+        ChatPage(records: records.filter { $0.id != String(id) }, earlier: earlier, later: later, covers: coveredRange)
     }
 }
