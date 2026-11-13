@@ -909,14 +909,26 @@ public class ChatViewModel: ObservableObject {
         }
     }
 
+    /// After a failed mark, how long to wait before each retry; once they run out, the next read sends it again.
+    var readMarkerRetryDelays: [Duration] = [.seconds(3), .seconds(15)]
+
     /// Tells the network the new read position shortly after it moves, so reading a burst of messages sends one
-    /// mark: each call replaces the one still waiting. Failures are ignored, since the next read sends it again.
+    /// mark: each call replaces the one still waiting.
     func scheduleReadMarker(_ send: @escaping @MainActor () async throws -> Void) {
         readSendTask?.cancel()
+        let retryDelays = readMarkerRetryDelays
         readSendTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(600))
-            guard self != nil, !Task.isCancelled else { return }
-            try? await send()
+            for retry in 0 ... retryDelays.count {
+                guard self != nil, !Task.isCancelled else { return }
+                do {
+                    try await send()
+                    return
+                } catch {
+                    guard retry < retryDelays.count else { return }
+                    try? await Task.sleep(for: retryDelays[retry])
+                }
+            }
         }
     }
 

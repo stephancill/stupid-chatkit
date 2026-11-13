@@ -2114,10 +2114,9 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     }
 
     /// Marks read up to the newest message fully on screen, only while the chat is visible and the app active (§4.6).
-    /// Cached messages shown before the chat connects don't count: reading them would move the cursor, and with it
-    /// the divider that history places once it arrives.
+    /// Before the chat connects, the view model keeps it until it has.
     private func reportVisibleRead() {
-        guard hasScrolledInitially, !isAnimatingJump, state == .connected, view.window != nil, UIApplication.shared.applicationState == .active else { return }
+        guard hasScrolledInitially, !isAnimatingJump, view.window != nil, UIApplication.shared.applicationState == .active else { return }
         let visibleBottom = collectionView.contentOffset.y + collectionView.bounds.height - collectionView.adjustedContentInset.bottom
         let visibleTop = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
         var newest: Int?

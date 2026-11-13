@@ -118,10 +118,12 @@ public protocol ChatAdapter: AnyObject {
     /// Sends and returns the network's id for the message, or `nil` when the network doesn't say. The framework
     /// fetches the newest page afterwards unless the message's record is stored by then.
     func send(_ message: ChatOutgoing) async throws -> String?
-    /// Whether the message is past the user's read position on the network.
+    /// Whether the message is past the read position the network has confirmed: from a fetch, a live update or a
+    /// mark that went through. The framework counts what the user read since as read itself.
     func isAfterReadPosition(_ message: ChatMessage) -> Bool
-    /// Moves the read position up to the message, if that passes unread messages, and returns what tells the
-    /// network, which the framework sends shortly after; `nil` when there is nothing to send.
+    /// What tells the network the user read up to the message, when that passes messages the network still counts
+    /// unread; `nil` when there is nothing to send. The framework sends it shortly after. It doesn't move the read
+    /// position: the send does, once the network accepts it, so a mark that fails goes again with the next read.
     func markRead(upTo message: ChatMessage) -> (@MainActor () async throws -> Void)?
     func reactors(of emoji: String, on messageId: String) -> [ChatReactor]
 
@@ -458,6 +460,10 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     /// From a successful `connect()` until `disconnect()` or a lost connection; `connect()` runs again when the
     /// app becomes active.
     private var isOpen = false
+    /// Messages the user read that the network hadn't confirmed when they did, so the count drops at once.
+    private var readLocally: Set<String> = []
+    /// The newest message seen before the chat connected, read once it has.
+    private var readOnConnect: ChatMessage?
     private var isConnecting = false
     /// Where the shown stretch of history sits in the store.
     private var position = ChatStore.WindowPosition.newest(count: AdapterChatViewModelLimits.windowCount)
@@ -563,6 +569,12 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             isReadOnly = (adapter as? any ChatReadOnlyAccess)?.isReadOnly ?? false
             isOpen = true
             state = .connected
+            if let seen = readOnConnect {
+                readOnConnect = nil
+                if let message = history.first(where: { $0.id == seen.id }) {
+                    markRead(upTo: message)
+                }
+            }
             if let live = adapter as? any ChatLiveUpdating {
                 await live.startFollowing()
             }
@@ -1112,18 +1124,29 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
 
     // MARK: Read position
 
-    /// The read position moves at once (the count follows it); the network hears shortly after.
+    /// The count drops at once; the network hears shortly after. Before the chat connects, the newest message
+    /// seen waits for it: stored messages shown early stay unread until history places the divider.
     override public func markRead(upTo message: ChatMessage) {
         guard !isQuickLook else { return }
-        let send = adapter.markRead(upTo: message)
+        // Messages still sending come after every stored one.
+        guard let index = history.firstIndex(where: { $0.id == message.id }) ?? (message.isSending ? history.indices.last : nil)
+        else { return }
+        let shown = history[index]
+        guard isOpen else {
+            if readOnConnect.flatMap({ seen in history.firstIndex { $0.id == seen.id } }).map({ $0 < index }) ?? true {
+                readOnConnect = shown
+            }
+            return
+        }
+        readLocally.formUnion(history[...index].filter(isUnread).map(\.id))
         updateUnreadCount()
-        if let send {
+        if let send = adapter.markRead(upTo: shown) {
             scheduleReadMarker(send)
         }
     }
 
     override func isAfterReadPosition(_ message: ChatMessage) -> Bool {
-        adapter.isAfterReadPosition(message)
+        adapter.isAfterReadPosition(message) && !readLocally.contains(message.id)
     }
 
     // MARK: Reactions

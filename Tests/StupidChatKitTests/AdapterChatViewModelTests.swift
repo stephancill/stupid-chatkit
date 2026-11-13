@@ -281,6 +281,80 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testAFailedReadMarkIsRetried() async throws {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2), message(3)]]
+        let chat = makeChat(adapter)
+        chat.readMarkerRetryDelays = [.milliseconds(100)]
+        await chat.connect()
+        adapter.failedReadMarks = 1
+        chat.markRead(upTo: message(3))
+        XCTAssertEqual(chat.unreadCount, 0, "read at once, before the network confirms it")
+        try await Task.sleep(for: .milliseconds(900))
+        XCTAssertEqual(adapter.readMarks, [3])
+        chat.disconnect()
+    }
+
+    func testAReadMarkThatNeverWentThroughGoesWithTheNextRead() async throws {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2), message(3)]]
+        let chat = makeChat(adapter)
+        chat.readMarkerRetryDelays = []
+        await chat.connect()
+        adapter.failedReadMarks = 1
+        chat.markRead(upTo: message(3))
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(adapter.readMarks, [])
+        chat.markRead(upTo: message(3))
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(adapter.readMarks, [3], "the same chat sends it again")
+        chat.disconnect()
+    }
+
+    func testAChatReopenedAfterAFailedReadMarkIsStillUnreadAndSendsIt() async throws {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2), message(3)]]
+        let first = makeChat(adapter)
+        first.readMarkerRetryDelays = []
+        await first.connect()
+        adapter.failedReadMarks = 1
+        first.markRead(upTo: message(3))
+        try await Task.sleep(for: .milliseconds(800))
+        first.disconnect()
+
+        let reopened = FakeAdapter()
+        try reopened.restore(state: XCTUnwrap(adapter.state()))
+        let chat = makeChat(reopened)
+        chat.latestMessageId = "3"
+        await chat.connect()
+        XCTAssertEqual(chat.unreadCount, 3, "the network still counts them unread")
+        chat.markRead(upTo: message(3))
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(reopened.readMarks, [3])
+        chat.disconnect()
+    }
+
+    func testAMessageSeenBeforeTheChatConnectsIsReadOnceItHas() async throws {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2), message(3)]]
+        let first = makeChat(adapter)
+        try await first.prefetch()
+
+        let reopened = FakeAdapter()
+        reopened.pages = [[message(1), message(2), message(3), message(4)]]
+        let chat = makeChat(reopened)
+        chat.latestMessageId = "4"
+        chat.prepareToShow()
+        chat.markRead(upTo: message(2))
+        XCTAssertEqual(chat.unreadCount, 3, "stored messages shown early stay unread until the chat connects")
+        await chat.connect()
+        XCTAssertEqual(chat.firstUnreadMessageId, "1", "the divider is placed before the early read")
+        XCTAssertEqual(chat.unreadCount, 2)
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(reopened.readMarks, [2])
+        chat.disconnect()
+    }
+
     func testLiveAdaptersFollowWhileOpenAndPushedMessagesShow() async {
         let adapter = FakeLiveAdapter()
         adapter.pages = [[message(1)], [message(1)]]
@@ -908,6 +982,8 @@ private class FakeAdapter: ChatAdapter {
     var earlierPages: [[ChatMessage]] = []
     var error: Error?
     var readUpTo = 0
+    /// How many of the next read marks fail.
+    var failedReadMarks = 0
     private(set) var sent: [ChatOutgoing] = []
     private(set) var readMarks: [Int] = []
     private(set) var fetches: [ChatPageRequest] = []
@@ -1016,8 +1092,15 @@ private class FakeAdapter: ChatAdapter {
 
     func markRead(upTo message: ChatMessage) -> (@MainActor () async throws -> Void)? {
         guard let id = Int(message.id), id > readUpTo else { return nil }
-        readUpTo = id
-        return { [weak self] in self?.readMarks.append(id) }
+        return { [weak self] in
+            guard let self else { return }
+            if failedReadMarks > 0 {
+                failedReadMarks -= 1
+                throw URLError(.networkConnectionLost)
+            }
+            readMarks.append(id)
+            readUpTo = max(readUpTo, id)
+        }
     }
 
     func reactors(of _: String, on _: String) -> [ChatReactor] {
