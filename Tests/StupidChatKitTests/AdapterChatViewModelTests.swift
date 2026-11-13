@@ -162,6 +162,33 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testAMessageStillSendingStaysOutOfTheComposerWhenTheChatOpensAgain() async {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1)]]
+        adapter.sendDelay = .milliseconds(300)
+        let chat = makeChat(adapter)
+        await chat.connect()
+        chat.draft = "Hello"
+        let sending = Task { await chat.send() }
+        try? await Task.sleep(for: .milliseconds(50))
+        chat.disconnect()
+
+        let again = makeChat(FakeAdapter())
+        XCTAssertEqual(again.draft, "", "the first visit is still sending it")
+        await sending.value
+        XCTAssertEqual(adapter.sent.map(\.text), ["Hello"])
+    }
+
+    func testAMessageTheAppClosedOnWhileSendingGoesBackToTheComposer() throws {
+        let chatKey = makeChat(FakeAdapter()).chatKey
+        let item = ChatOutboxItem(id: "queued-1", chatKey: chatKey, created: Date(), content: .message(text: "Hello", attachments: [], replyToId: nil), isInFlight: true)
+        try store.enqueue(item)
+
+        let again = makeChat(FakeAdapter())
+        XCTAssertEqual(again.draft, "Hello")
+        XCTAssertEqual(try store.outbox(chatKey: chatKey), [])
+    }
+
     func testAQueuedMessageSurvivesTheChatClosing() async {
         let adapter = FakeAdapter()
         adapter.pages = [[message(1)]]
@@ -967,7 +994,13 @@ private class FakeAdapter: ChatAdapter {
     /// Sends after this many succeed fail.
     var failsSendAfter: Int?
 
+    /// How long the network takes to answer a send.
+    var sendDelay: Duration?
+
     func send(_ message: ChatOutgoing) async throws -> String? {
+        if let sendDelay {
+            try await Task.sleep(for: sendDelay)
+        }
         if let failsSendAfter, sent.count >= failsSendAfter {
             throw URLError(.notConnectedToInternet)
         }

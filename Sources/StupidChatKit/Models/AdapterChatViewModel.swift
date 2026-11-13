@@ -440,6 +440,14 @@ enum AdapterChatViewModelLimits {
     static let unreadExtensions = 4
 }
 
+/// Outbox items a chat in this app is delivering now. A chat opened again while one goes (such as after leaving
+/// and coming back before the network answered) leaves them to it: only in-flight items nothing is delivering
+/// were left by the app closing.
+@MainActor
+private enum OutboxDeliveries {
+    static var inProgress: Set<String> = []
+}
+
 /// The shared chat screen's model for a network that has a `ChatAdapter`.
 @MainActor
 public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
@@ -913,13 +921,14 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     }
 
     /// Messages left from an earlier visit: waiting ones show as sending; ones the app closed on while sending go back
-    /// to the composer, since the network may have taken them.
+    /// to the composer, since the network may have taken them. One an earlier visit is still sending is left to it.
     private func restoreOutbox() {
         for item in (try? store.outbox(chatKey: chatKey)) ?? [] {
             guard item.isInFlight else {
                 show(queued: item)
                 continue
             }
+            guard !OutboxDeliveries.inProgress.contains(item.id) else { continue }
             try? store.dequeue(id: item.id)
             if case let .message(text, files, _) = item.content, draft.isEmpty, attachments.isEmpty {
                 draft = text
@@ -939,7 +948,9 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
 
     private func deliver(_ item: ChatOutboxItem, clearsComposer: Bool) async {
         try? store.enqueue(item)
+        OutboxDeliveries.inProgress.insert(item.id)
         defer {
+            OutboxDeliveries.inProgress.remove(item.id)
             try? store.dequeue(id: item.id)
             recordings[item.id] = nil
         }
