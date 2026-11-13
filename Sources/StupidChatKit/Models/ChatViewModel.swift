@@ -754,6 +754,12 @@ public class ChatViewModel: ObservableObject {
     /// The newest message with its one-line preview, the unread count, and the unseen reactions count (`nil`
     /// without `tracksUnseenReactions`), for the chat's row in the Chats list.
     var summaryDidChange: ((_ latest: ChatMessage?, _ body: String?, _ unreadCount: Int, _ unseenReactionCount: Int?) -> Void)?
+    /// Whether the network has the chat muted, and archived, from its Chats row; `nil` until a row is followed
+    /// (`ChatListViewModel.follow`).
+    @Published public internal(set) var isMuted: Bool?
+    @Published public internal(set) var isArchived: Bool?
+    /// A mute or archive the network accepted, for the chat's row; `nil` for what didn't change.
+    var rowSettingsDidChange: ((_ muted: Bool?, _ archived: Bool?) -> Void)?
     private var messagesById: [String: ChatMessage] = [:]
     private var renderedTextCache: [String: AttributedString] = [:]
     private let draftStore: ChatDraftStore
@@ -1219,6 +1225,22 @@ public class ChatViewModel: ObservableObject {
 
     /// Deletes the message for everyone once the network confirms it.
     public func delete(_: ChatMessage) async {}
+
+    /// Whether the chat can be muted and unmuted on its network (`ChatMuting`), once its row says which it is.
+    public var canMute: Bool {
+        false
+    }
+
+    /// Whether the chat can be archived and unarchived on its network (`ChatArchiving`), once its row says which it is.
+    public var canArchive: Bool {
+        false
+    }
+
+    /// Mutes or unmutes the chat on its network, then its row; throws what the network answered.
+    public func setMuted(_: Bool) async throws {}
+
+    /// Archives or unarchives the chat on its network, moving its row; throws what the network answered.
+    public func setArchived(_: Bool) async throws {}
 
     // MARK: Buttons
 

@@ -191,6 +191,38 @@ public final class ChatHistory {
     }
 }
 
+/// Muting the chat on its network: it stops notifying, and its unread count shows quietly. Whether it is muted
+/// comes from its Chats row.
+@MainActor
+public protocol ChatMuting: ChatAdapter {
+    /// Whether this chat can be muted, such as not the user's own saved messages; `true` unless implemented.
+    var canMute: Bool { get }
+    /// Returns once the network accepted it.
+    func setMuted(_ muted: Bool) async throws
+}
+
+public extension ChatMuting {
+    var canMute: Bool {
+        true
+    }
+}
+
+/// Archiving the chat on its network, which moves it from the Chats list to the archive. Whether it is archived
+/// comes from which of the two its row is in.
+@MainActor
+public protocol ChatArchiving: ChatAdapter {
+    /// Whether this chat can be archived; `true` unless implemented.
+    var canArchive: Bool { get }
+    /// Returns once the network accepted it.
+    func setArchived(_ archived: Bool) async throws
+}
+
+public extension ChatArchiving {
+    var canArchive: Bool {
+        true
+    }
+}
+
 /// Changing the text of the user's sent messages.
 @MainActor
 public protocol ChatEditing: ChatAdapter {
@@ -1093,6 +1125,28 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             errorMessage = error.localizedDescription
         }
         adapterDidChange()
+    }
+
+    override public var canMute: Bool {
+        isMuted != nil && (adapter as? any ChatMuting)?.canMute == true
+    }
+
+    override public var canArchive: Bool {
+        isArchived != nil && (adapter as? any ChatArchiving)?.canArchive == true
+    }
+
+    override public func setMuted(_ muted: Bool) async throws {
+        guard canMute, let muting = adapter as? any ChatMuting else { return }
+        try await muting.setMuted(muted)
+        isMuted = muted
+        rowSettingsDidChange?(muted, nil)
+    }
+
+    override public func setArchived(_ archived: Bool) async throws {
+        guard canArchive, let archiving = adapter as? any ChatArchiving else { return }
+        try await archiving.setArchived(archived)
+        isArchived = archived
+        rowSettingsDidChange?(nil, archived)
     }
 
     override public var networkPressesButtons: Bool {

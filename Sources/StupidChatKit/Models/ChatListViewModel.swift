@@ -27,7 +27,7 @@ public struct ChatSummary<Destination: Hashable & Codable & Sendable>: Identifia
     /// Whether the title is a person's name or a list of members' names, which "Redact names" hides.
     public let titleNamesPeople: Bool
     /// Optional so chat lists cached before it existed still decode.
-    private let muted: Bool?
+    private var muted: Bool?
     /// Optional so chat lists cached before it existed still decode.
     private var unseenReactions: Int?
     /// The other person's presence in a one-to-one chat, so the chat opens showing it.
@@ -37,8 +37,9 @@ public struct ChatSummary<Destination: Hashable & Codable & Sendable>: Identifia
     public var latestMessageId: String?
 
     /// Whether the user muted the chat on its network, so its unread count is shown quietly.
-    public var isMuted: Bool {
-        muted == true
+    public internal(set) var isMuted: Bool {
+        get { muted == true }
+        set { muted = newValue }
     }
 
     /// Messages of the user's that others reacted to since the user last saw them.
@@ -373,6 +374,16 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     /// read state without waiting for the reload.
     public func follow<ViewModel: ChatViewModel>(_ viewModel: ViewModel, chatId: String) -> ViewModel {
         viewModel.latestMessageId = viewModel.latestMessageId ?? (chats + archivedChats).first { $0.id == chatId }?.latestMessageId
+        if let chat = chats.first(where: { $0.id == chatId }) {
+            viewModel.isMuted = chat.isMuted
+            viewModel.isArchived = false
+        } else if let chat = archivedChats.first(where: { $0.id == chatId }) {
+            viewModel.isMuted = chat.isMuted
+            viewModel.isArchived = true
+        }
+        viewModel.rowSettingsDidChange = { [weak self] muted, archived in
+            self?.updateChat(id: chatId, muted: muted, archived: archived)
+        }
         viewModel.summaryDidChange = { [weak self] latest, body, unreadCount, unseenReactionCount in
             guard let self else { return }
             followedUpdateCount += 1
@@ -395,6 +406,26 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
             var updated = archivedChats
             updated[index] = chat
             setArchivedChats(updated)
+        }
+    }
+
+    /// A row the user muted or archived from its chat, changed at once rather than on the next load, which the
+    /// network's own answer then confirms.
+    private func updateChat(id: String, muted: Bool?, archived: Bool?) {
+        let isArchived = archivedChats.contains { $0.id == id }
+        guard var chat = (isArchived ? archivedChats : chats).first(where: { $0.id == id }) else { return }
+        if let muted {
+            chat.isMuted = muted
+        }
+        let remaining = (isArchived ? archivedChats : chats).filter { $0.id != id }
+        if archived ?? isArchived == isArchived {
+            isArchived ? setArchivedChats(remaining + [chat]) : setChats(remaining + [chat])
+        } else if isArchived {
+            setArchivedChats(remaining)
+            setChats(chats + [chat])
+        } else {
+            setChats(remaining)
+            setArchivedChats(archivedChats + [chat])
         }
     }
 

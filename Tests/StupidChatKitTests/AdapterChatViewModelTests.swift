@@ -931,6 +931,58 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testMutingAndArchivingChangeTheNetworkThenTheRow() async throws {
+        let row = ChatSummary<String>(id: "fake:1", network: .telegram, title: "Fake", avatarURL: nil, preview: nil, timestamp: Date(), unreadCount: 0, destination: "fake")
+        let list = ChatListViewModel<String>(sources: { [ChatListSource(provider: RowsProvider(chats: [row]), accountId: "test", label: "Test")] }, caches: directory)
+        await list.load()
+        let adapter = FakeSettingsAdapter()
+        let chat = makeChat(adapter)
+        XCTAssertFalse(chat.canMute, "a chat without a row doesn't know whether it is muted")
+        XCTAssertFalse(chat.canArchive)
+
+        _ = list.follow(chat, chatId: "test|fake:1")
+        XCTAssertEqual(chat.isMuted, false)
+        XCTAssertEqual(chat.isArchived, false)
+        XCTAssertTrue(chat.canMute)
+        XCTAssertTrue(chat.canArchive)
+
+        try await chat.setMuted(true)
+        XCTAssertEqual(adapter.mutes, [true])
+        XCTAssertEqual(chat.isMuted, true)
+        XCTAssertEqual(list.chats.first?.isMuted, true)
+
+        try await chat.setArchived(true)
+        XCTAssertEqual(adapter.archives, [true])
+        XCTAssertEqual(chat.isArchived, true)
+        XCTAssertEqual(list.chats.map(\.id), [])
+        XCTAssertEqual(list.archivedChats.map(\.id), ["test|fake:1"])
+        XCTAssertEqual(list.archivedChats.first?.isMuted, true)
+
+        adapter.settingsError = URLError(.notConnectedToInternet)
+        do {
+            try await chat.setArchived(false)
+            XCTFail("the network's refusal is thrown")
+        } catch {}
+        XCTAssertEqual(chat.isArchived, true, "a refused change leaves the chat as it was")
+        XCTAssertEqual(list.archivedChats.map(\.id), ["test|fake:1"])
+
+        adapter.settingsError = nil
+        try await chat.setArchived(false)
+        XCTAssertEqual(list.chats.map(\.id), ["test|fake:1"])
+        XCTAssertEqual(list.archivedChats.map(\.id), [])
+    }
+
+    func testChatsWithoutMutingOrArchivingOfferNeither() async {
+        let row = ChatSummary<String>(id: "fake:1", network: .telegram, title: "Fake", avatarURL: nil, preview: nil, timestamp: Date(), unreadCount: 0, destination: "fake")
+        let list = ChatListViewModel<String>(sources: { [ChatListSource(provider: RowsProvider(chats: [row]), accountId: "test", label: "Test")] }, caches: directory)
+        await list.load()
+        let chat = makeChat(FakeAdapter())
+        _ = list.follow(chat, chatId: "test|fake:1")
+        XCTAssertEqual(chat.isMuted, false)
+        XCTAssertFalse(chat.canMute)
+        XCTAssertFalse(chat.canArchive)
+    }
+
     private func makeStore() throws -> ChatStore {
         if let store {
             return store
@@ -1207,6 +1259,32 @@ private final class FakeMenuAdapter: FakeAdapter, ChatComposerMenus {
     func selectComposerMenuItem(_ itemId: String) {
         selected = itemId
         onChange?()
+    }
+}
+
+private struct RowsProvider: ChatListProvider {
+    let chats: [ChatSummary<String>]
+    let chatNetwork = ChatNetwork.telegram
+
+    func chatList() async throws -> ChatListPage<String> {
+        ChatListPage(chats: chats, archived: [])
+    }
+}
+
+@MainActor
+private final class FakeSettingsAdapter: FakeAdapter, ChatMuting, ChatArchiving {
+    var settingsError: Error?
+    private(set) var mutes: [Bool] = []
+    private(set) var archives: [Bool] = []
+
+    func setMuted(_ muted: Bool) async throws {
+        if let settingsError { throw settingsError }
+        mutes.append(muted)
+    }
+
+    func setArchived(_ archived: Bool) async throws {
+        if let settingsError { throw settingsError }
+        archives.append(archived)
     }
 }
 
