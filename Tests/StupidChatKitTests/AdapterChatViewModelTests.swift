@@ -109,6 +109,18 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testLoadingAheadNeitherRendersNorFollowsTheStore() async throws {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2)]]
+        let chat = try AdapterChatViewModel(adapter: adapter, accountId: "test", store: makeStore(), draftStore: ChatDraftStore(defaults: XCTUnwrap(UserDefaults(suiteName: "prefetch-\(UUID().uuidString)"))))
+        try await chat.prefetch()
+        XCTAssertEqual(adapter.fetches, [.newest])
+        XCTAssertEqual(adapter.renderCount, 0, "nothing is shown, so nothing renders")
+        XCTAssertTrue(chat.messages.isEmpty)
+        chat.prepareToShow()
+        XCTAssertEqual(chat.messages.map(\.id), ["1", "2"], "showing it reads the store")
+    }
+
     func testANewestPageAboveAGapShowsTheNewestMessages() async {
         let adapter = FakeAdapter()
         adapter.pages = [[message(1), message(2)]]
@@ -818,17 +830,28 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    private func makeStore() throws -> ChatStore {
+        if let store {
+            return store
+        }
+        store = try ChatStore(url: directory.appending(path: "store.sqlite"))
+        return store
+    }
+
     private func makeChat(_ adapter: FakeAdapter) -> AdapterChatViewModel<FakeAdapter> {
         let suite = "AdapterChatViewModelTests-\(UUID().uuidString)"
         if store == nil {
-            store = try! ChatStore(url: directory.appending(path: "store.sqlite"))
+            store = try! makeStore()
         }
-        return AdapterChatViewModel(
+        let chat = AdapterChatViewModel(
             adapter: adapter,
             accountId: "test",
             store: store,
             draftStore: ChatDraftStore(defaults: UserDefaults(suiteName: suite)!),
         )
+        // As the chat screen does before its first render.
+        chat.prepareToShow()
+        return chat
     }
 }
 
@@ -916,7 +939,10 @@ private class FakeAdapter: ChatAdapter {
         }
     }
 
+    private(set) var renderCount = 0
+
     func render(_ records: [ChatRecord]) -> ChatRendering {
+        renderCount += 1
         let messages = records.filter { $0.relatesTo == nil }.map { catalog[$0.id] ?? message(Int($0.id) ?? 0) }
         let ids = Set(messages.map(\.id))
         return ChatRendering(messages: messages, reactions: reactions.filter { ids.contains($0.key) })

@@ -458,6 +458,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     /// Whether the window shows the newest messages, so it moves to a newer chunk when one starts.
     private var followsNewest = true
     private var storeObservation: ChatStoreObservation?
+    private var isPrepared = false
     private var stateSaveTask: Task<Void, Never>?
     /// Voice messages being sent this visit → the recording the composer made, played while it sends.
     private var recordings: [String: ChatVoiceNote] = [:]
@@ -498,6 +499,14 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
                 Task { await self.poll() }
             }
         }
+    }
+
+    /// Reads the stored messages and starts following the store, once: when the chat screen is made (before its first
+    /// render) or connects. A chat made only to load ahead (`prefetch()`) never does, so loading many costs no
+    /// decoding or redrawing on the main thread.
+    override public func prepareToShow() {
+        guard !isPrepared else { return }
+        isPrepared = true
         storeObservation = store.observe(chatKey: chatKey) { [weak self] in self?.reloadWindow() }
         openAtFirstUnread()
         restoreOutbox()
@@ -519,6 +528,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     }
 
     override public func connect() async {
+        prepareToShow()
         guard !isOpen, !isConnecting else { return }
         isConnecting = true
         defer { isConnecting = false }
@@ -587,7 +597,15 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
 
     private func fetchNewest() async throws {
         let page = try await adapter.fetch(.newest)
-        try store.apply(page, for: .newest, chatKey: chatKey)
+        try await apply(page, for: .newest)
+    }
+
+    /// Stores a page off the main thread; the store tells the open chat when it's written.
+    private func apply(_ page: ChatPage, for request: ChatPageRequest, adjacentTo chunk: Int64? = nil) async throws {
+        let store = store, chatKey = chatKey
+        try await Task.detached(priority: .userInitiated) {
+            try store.apply(page, for: request, chatKey: chatKey, adjacentTo: chunk)
+        }.value
     }
 
     /// Without an error the app closed the connection itself (it went to the background) and reconnects when
@@ -660,7 +678,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         do {
             if let cursor = chunk.earlierCursor ?? window.oldestMessage.flatMap(adapter.cursor(before:)) {
                 let page = try await adapter.fetch(.before(cursor))
-                try store.apply(page, for: .before(cursor), chatKey: chatKey, adjacentTo: chunk.id)
+                try await apply(page, for: .before(cursor), adjacentTo: chunk.id)
                 extend(earlierBy: max(page.records.count, 1))
             } else {
                 // A gap live updates opened, on a network whose cursors can't be made from a message: the newest
@@ -692,7 +710,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
                 await jumpToLatest()
                 return
             }
-            try store.apply(page, for: .after(cursor), chatKey: chatKey, adjacentTo: chunk.id)
+            try await apply(page, for: .after(cursor), adjacentTo: chunk.id)
             extendLater()
         } catch {
             errorMessage = error.localizedDescription
@@ -720,7 +738,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             do {
                 let page = try await adapter.fetch(.around(messageId: messageId))
                 if !page.records.isEmpty {
-                    try store.apply(page, for: .around(messageId: messageId), chatKey: chatKey)
+                    try await apply(page, for: .around(messageId: messageId))
                 }
             } catch {
                 errorMessage = error.localizedDescription

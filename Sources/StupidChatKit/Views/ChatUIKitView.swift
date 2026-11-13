@@ -210,6 +210,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     private let minimumTextHeight: CGFloat = 36
 
     init(viewModel: ChatViewModel) {
+        viewModel.prepareToShow()
         self.viewModel = viewModel
         super.init(nibName: nil, bundle: nil)
     }

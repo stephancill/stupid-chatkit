@@ -100,6 +100,7 @@ public final class ChatStore: @unchecked Sendable {
         }
         try? (url as NSURL).setResourceValue(URLFileProtection.completeUntilFirstUserAuthentication, forKey: .fileProtectionKey)
         if let darwinNotificationName {
+            dataVersion = try database.first("PRAGMA data_version", map: { $0.int(0) })
             listenForOtherProcesses(name: darwinNotificationName)
         }
     }
@@ -536,8 +537,22 @@ public final class ChatStore: @unchecked Sendable {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), observer, { _, observer, _, _, _ in
             guard let observer else { return }
             let store = Unmanaged<ChatStore>.fromOpaque(observer).takeUnretainedValue()
+            // The notification is also delivered for this store's own writes; only another process's count.
+            guard store.otherProcessWrote() else { return }
             Task { @MainActor in store.notify(nil) }
         }, name as CFString, nil, .deliverImmediately)
+    }
+
+    /// SQLite's `data_version` changes only when another connection commits, so it tells another process's writes
+    /// from this store's own.
+    private var dataVersion: Int64?
+
+    private func otherProcessWrote() -> Bool {
+        locked {
+            guard let version = try? database.first("PRAGMA data_version", map: { $0.int(0) }) else { return true }
+            defer { dataVersion = version }
+            return dataVersion.map { $0 != version } ?? true
+        }
     }
 
     // MARK: Internals (called with the lock held)

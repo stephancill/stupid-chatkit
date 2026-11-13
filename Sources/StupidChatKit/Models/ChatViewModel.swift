@@ -797,6 +797,9 @@ public class ChatViewModel: ObservableObject {
         preconditionFailure("\(type(of: self)) must override connect()")
     }
 
+    /// Reads what the chat shows from where it's kept, before the screen's first render; `connect()` does it too.
+    public func prepareToShow() {}
+
     /// Stops following the conversation when the chat closes.
     public func disconnect() {}
 

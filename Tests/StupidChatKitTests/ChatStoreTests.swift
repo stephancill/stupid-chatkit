@@ -168,6 +168,24 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertNil(try store.record(id: "99", chatKey: chat), "nothing is newer than a newest page")
     }
 
+    /// Two stores on one file stand in for the app and its extension.
+    @MainActor
+    func testOnlyAnotherProcessesWritesReloadEveryChat() async throws {
+        let url = directory.appending(path: "shared.sqlite")
+        let name = "ChatStoreTests.\(UUID().uuidString)"
+        let app = try ChatStore(url: url, darwinNotificationName: name)
+        let extensionStore = try ChatStore(url: url, darwinNotificationName: name)
+        var reloads = 0
+        let observation = app.observe(chatKey: "other|chat") { reloads += 1 }
+        try app.apply(page(1 ... 2), for: .newest, chatKey: chat)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(reloads, 0, "its own write to another chat")
+        try extensionStore.apply(page(1 ... 2), for: .newest, chatKey: "account|test:pushed")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(reloads, 1, "another process's write may touch any chat")
+        observation.cancel()
+    }
+
     func testChatKeysMatchBySuffix() throws {
         try store.apply(page(1 ... 1), for: .newest, chatKey: "a|telegram:user:1")
         try store.apply(page(1 ... 1), for: .newest, chatKey: "b|telegram:user:1")
