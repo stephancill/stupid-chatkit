@@ -1327,8 +1327,10 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
                 unavailableReferences = resolving.unavailableReferences
             }
         }
-        let rendering = adapter.render(window.records)
-        resolveStoredReferences(of: rendering.messages)
+        var rendering = adapter.render(window.records)
+        if resolveStoredReferences(of: rendering.messages) {
+            rendering = adapter.render(window.records)
+        }
         if let reporting = adapter as? any ChatReadReceipts {
             var latest: [String: ChatReceipt] = [:]
             for message in rendering.messages where message.isOwn {
@@ -1344,13 +1346,16 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     }
 
     /// Quoted messages outside the window that the store has, ahead of what the adapter resolves on the network.
-    private func resolveStoredReferences(of messages: [ChatMessage]) {
+    @discardableResult
+    private func resolveStoredReferences(of messages: [ChatMessage]) -> Bool {
+        var renderedOthers = false
         let shown = Set(messages.map(\.id))
         let adapterResolved = (adapter as? any ChatReferenceResolving)?.referencedMessages ?? [:]
         var resolved = adapterResolved
         for id in Set(messages.compactMap(\.replyToId)) where !shown.contains(id) && resolved[id] == nil {
             guard let record = try? store.record(id: id, chatKey: chatKey), record.relatesTo == nil else { continue }
             let related = (try? store.related(to: [id], chatKey: chatKey)) ?? []
+            renderedOthers = true
             if let message = adapter.render([record] + related).messages.first(where: { $0.id == id }) {
                 resolved[id] = message
             }
@@ -1358,6 +1363,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         if referencedMessages != resolved {
             referencedMessages = resolved
         }
+        return renderedOthers
     }
 
     /// Saves shortly after changes while open, so the adapter's state survives the app being killed in a chat.

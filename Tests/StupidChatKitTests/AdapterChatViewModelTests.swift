@@ -991,6 +991,26 @@ final class AdapterChatViewModelTests: XCTestCase {
         return store
     }
 
+    func testReactorsComeFromTheWindowWhenAReplyQuotesAStoredMessageOutsideIt() async {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2)]]
+        let first = makeChat(adapter)
+        await first.connect()
+        first.disconnect()
+
+        let reopened = FakeRenderStateAdapter()
+        let reply = ChatMessage(id: "11", sender: ChatUser(id: "ada", name: "Ada", avatarURL: nil), timestamp: nil, text: "Reply", replyToId: "1", isOwn: false)
+        reopened.pages = [[message(10), reply]]
+        reopened.earlierPages = [[message(3)], [message(1), message(2)]]
+        reopened.reactions = ["10": [ChatReaction(emoji: "👍", count: 1, includesYou: false)]]
+        let chat = makeChat(reopened)
+        await chat.connect()
+        XCTAssertEqual(chat.messages.map(\.id), ["10", "11"])
+        XCTAssertEqual(chat.message(withId: "1")?.text, "Message 1", "the quoted message comes from the store")
+        XCTAssertEqual(chat.reactors(of: "👍", on: "10").map(\.user.id), ["ada"], "the adapter's state is the window's, not the quoted message's")
+        chat.disconnect()
+    }
+
     private func makeChat(_ adapter: FakeAdapter) -> AdapterChatViewModel<FakeAdapter> {
         let suite = "AdapterChatViewModelTests-\(UUID().uuidString)"
         if store == nil {
@@ -1170,6 +1190,23 @@ private class FakeAdapter: ChatAdapter {
     func restore(state data: Data) {
         guard let state = try? JSONDecoder().decode(State.self, from: data) else { return }
         readUpTo = state.readUpTo
+    }
+}
+
+/// Keeps what it last rendered, as network adapters do, and answers reactors from it.
+@MainActor
+private final class FakeRenderStateAdapter: FakeAdapter {
+    private var rendered: Set<String> = []
+
+    override func render(_ records: [ChatRecord]) -> ChatRendering {
+        let rendering = super.render(records)
+        rendered = Set(rendering.messages.map(\.id))
+        return rendering
+    }
+
+    override func reactors(of emoji: String, on messageId: String) -> [ChatReactor] {
+        guard rendered.contains(messageId), reactions[messageId]?.contains(where: { $0.emoji == emoji }) == true else { return [] }
+        return [ChatReactor(user: ChatUser(id: "ada", name: "Ada", avatarURL: nil), date: nil, isYou: false)]
     }
 }
 
