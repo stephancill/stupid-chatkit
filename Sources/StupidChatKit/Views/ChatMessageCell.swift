@@ -1848,15 +1848,11 @@ final class ChatAvatarView: UIView {
         reset()
         self.url = url
         guard let url else { return }
-        if let cached = ImageCache.shared.image(for: url) {
-            imageView.image = cached
-            return
-        }
+        // Kept on disk: shown at once, then downloaded again once a launch (`ImageCache`).
+        imageView.image = ImageCache.shared.cachedImage(url: url, key: nil, persist: true)
+        guard imageView.image == nil || ImageCache.shared.needsRevalidation(url: url) else { return }
         task = Task { [weak self] in
-            guard let (data, _) = try? await URLSession.shared.data(from: url),
-                  let image = UIImage(data: data), !Task.isCancelled
-            else { return }
-            ImageCache.shared.setImage(image, for: url)
+            guard let image = await ImageCache.shared.load(url: url, key: nil, persist: true), !Task.isCancelled else { return }
             if self?.url == url {
                 self?.imageView.image = image
             }

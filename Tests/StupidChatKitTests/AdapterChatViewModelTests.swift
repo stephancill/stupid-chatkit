@@ -96,7 +96,7 @@ final class AdapterChatViewModelTests: XCTestCase {
         try await first.prefetch()
 
         let reopened = FakeAdapter()
-        reopened.restore(state: try XCTUnwrap(adapter.state()))
+        try reopened.restore(state: XCTUnwrap(adapter.state()))
         let chat = makeChat(reopened)
         chat.latestMessageId = "3"
         await chat.connect()

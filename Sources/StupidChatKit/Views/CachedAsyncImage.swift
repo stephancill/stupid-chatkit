@@ -1,11 +1,13 @@
 import SwiftUI
 import UIKit
 
-/// An image from a URL, through `ImageCache`.
+/// An image from a URL, through `ImageCache`. A `persist`ed image (an avatar) is kept on disk and shown from there
+/// at once on later launches, then downloaded again once a launch (stale-while-revalidate).
 public struct CachedAsyncImage<Placeholder: View, Failure: View>: View {
     let url: URL?
     let cacheKey: String?
     let contentMode: ContentMode
+    let persist: Bool
     let onComplete: (() -> Void)?
     @ViewBuilder let placeholder: () -> Placeholder
     @ViewBuilder let failure: () -> Failure
@@ -16,6 +18,7 @@ public struct CachedAsyncImage<Placeholder: View, Failure: View>: View {
         url: URL?,
         cacheKey: String? = nil,
         contentMode: ContentMode = .fill,
+        persist: Bool = false,
         onComplete: (() -> Void)? = nil,
         @ViewBuilder placeholder: @escaping () -> Placeholder,
         @ViewBuilder failure: @escaping () -> Failure,
@@ -23,12 +26,12 @@ public struct CachedAsyncImage<Placeholder: View, Failure: View>: View {
         self.url = url
         self.cacheKey = cacheKey
         self.contentMode = contentMode
+        self.persist = persist
         self.onComplete = onComplete
         self.placeholder = placeholder
         self.failure = failure
         // Draw a cached image in the first frame, so a preloaded image never shows its placeholder.
-        _loadedImage = State(initialValue: url.flatMap { ImageCache.shared.image(for: $0) }
-            ?? cacheKey.flatMap { ImageCache.shared.image(forKey: $0) })
+        _loadedImage = State(initialValue: ImageCache.shared.cachedImage(url: url, key: cacheKey, persist: persist))
     }
 
     public var body: some View {
@@ -56,18 +59,15 @@ public struct CachedAsyncImage<Placeholder: View, Failure: View>: View {
             return
         }
 
-        if let cached = ImageCache.shared.image(for: url) {
+        if let cached = ImageCache.shared.image(for: url), !persist || !ImageCache.shared.needsRevalidation(url: url) {
             loadedImage = cached
             failedURL = nil
             onComplete?()
             return
         }
 
-        if let cacheKey, let cached = ImageCache.shared.image(forKey: cacheKey) {
-            loadedImage = cached
-        } else {
-            loadedImage = nil
-        }
+        // What was seen before shows while the image downloads again (by key when the URL changed).
+        loadedImage = ImageCache.shared.cachedImage(url: url, key: cacheKey, persist: persist)
         failedURL = nil
 
         if url.isFileURL {
@@ -85,8 +85,11 @@ public struct CachedAsyncImage<Placeholder: View, Failure: View>: View {
             return
         }
 
-        guard let image = await ImageCache.shared.load(url: url) else {
-            failedURL = url
+        guard let image = await ImageCache.shared.load(url: url, key: cacheKey, persist: persist) else {
+            // A kept image stays when the download fails.
+            if loadedImage == nil {
+                failedURL = url
+            }
             onComplete?()
             return
         }

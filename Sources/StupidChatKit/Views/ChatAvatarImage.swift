@@ -20,7 +20,7 @@ public struct ChatAvatarImage: View {
         Group {
             // Profile photos identify people as names do, so redaction shows the initial instead.
             if let url, !redactionEnabled {
-                CachedAsyncImage(url: url) { fallback } failure: { fallback }
+                CachedAsyncImage(url: url, persist: true) { fallback } failure: { fallback }
             } else {
                 fallback
             }
