@@ -596,10 +596,8 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             }
             placeUnreadDivider()
             saveState()
-            canReact = (adapter as? any ChatReactionSending)?.acceptsReactions ?? false
-            canAttach = adapter.acceptsAttachments
-            isReadOnly = (adapter as? any ChatReadOnlyAccess)?.isReadOnly ?? false
             isOpen = true
+            updateAbilities()
             state = .connected
             if let seen = readOnConnect {
                 readOnConnect = nil
@@ -1278,7 +1276,25 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
 
     // MARK: Publishing
 
+    /// What the network lets the user do here. It can change once the adapter connects, which may be after the chat
+    /// opens (stored messages that are current need no fetch), so it's read again on every change while open.
+    private func updateAbilities() {
+        guard isOpen else { return }
+        let react = (adapter as? any ChatReactionSending)?.acceptsReactions ?? false
+        if canReact != react {
+            canReact = react
+        }
+        if canAttach != adapter.acceptsAttachments {
+            canAttach = adapter.acceptsAttachments
+        }
+        let readOnly = (adapter as? any ChatReadOnlyAccess)?.isReadOnly ?? false
+        if isReadOnly != readOnly {
+            isReadOnly = readOnly
+        }
+    }
+
     private func adapterDidChange() {
+        updateAbilities()
         let info = adapter.info
         if title != info.title {
             title = info.title

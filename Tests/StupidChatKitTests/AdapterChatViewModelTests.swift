@@ -48,6 +48,15 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testReactionsEnableOnceTheAdapterConnects() async {
+        let adapter = FakeConnectingReactingAdapter()
+        adapter.pages = [[message(1)]]
+        let chat = makeChat(adapter)
+        await chat.connect()
+        XCTAssertTrue(chat.canReact, "the adapter allows reactions only once it follows the chat")
+        chat.disconnect()
+    }
+
     func testStoredMessagesShowWithTheirDividerInTheFirstRender() async {
         let adapter = FakeAdapter()
         adapter.readUpTo = 1
@@ -1354,6 +1363,30 @@ private final class FakeReactingAdapter: FakeAdapter, ChatReactionSending {
     func toggleReaction(_ emoji: String, on messageId: String) async throws {
         reactions[messageId] = [ChatReaction(emoji: emoji, count: 1, includesYou: true)]
     }
+}
+
+/// Knows whether the network allows reactions only once it's connected, as Apron does after signing in.
+@MainActor
+private final class FakeConnectingReactingAdapter: FakeAdapter, ChatLiveUpdating, ChatReactionSending {
+    var onConnectionLost: ((Error?) -> Void)?
+    var onError: ((Error) -> Void)?
+    var onCatchUp: (() -> Void)?
+    private(set) var acceptsReactions = false
+
+    func startFollowing() async {
+        acceptsReactions = true
+        onChange?()
+    }
+
+    func stopFollowing() {
+        acceptsReactions = false
+    }
+
+    func yourEmojis(on _: String) -> [String] {
+        []
+    }
+
+    func toggleReaction(_: String, on _: String) async throws {}
 }
 
 @MainActor
