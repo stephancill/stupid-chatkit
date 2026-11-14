@@ -460,7 +460,15 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     /// Replaces a set of rows that a live connection rebuilt, such as one Apron server's rooms. The rows name
     /// their account.
     public func replaceChats(where isReplaced: (Summary) -> Bool, with summaries: [Summary]) {
-        setChats(chats.filter { !isReplaced($0) } + summaries)
+        setChats(chats.filter { !isReplaced($0) } + summaries.map(keepingFollowedReadState))
+    }
+
+    /// A rebuilt row of an open chat whose latest message the chat has already shown keeps the chat's counts: the
+    /// network built it from what it knew before the user read in the chat, such as a reload after the message
+    /// arrived that finished before the read mark did. A row with a newer latest message is the network's.
+    private func keepingFollowedReadState(_ chat: Summary) -> Summary {
+        guard let row = followedRows[chat.id], let latest = row.latest, latest.id == chat.latestMessageId else { return chat }
+        return Self.updated(chat, latest: latest, body: row.body, unreadCount: row.unreadCount, unseenReactionCount: row.unseenReactionCount)
     }
 
     /// Rows rebuilt for chats with new messages, replacing those chats' rows. `accountId` names the account

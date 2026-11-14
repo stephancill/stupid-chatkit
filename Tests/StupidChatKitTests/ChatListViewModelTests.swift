@@ -233,6 +233,28 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertEqual(list.chats.first?.unreadCount, 3, "a load started after the update is the network's latest")
     }
 
+    /// A live reload of the rows can finish after the open chat was read, with the count from before the read mark.
+    func testARebuiltRowOfAnOpenChatKeepsItsReadStateUntilANewerMessage() async throws {
+        var stale = row("t", .telegram, minutesAgo: 1)
+        stale.latestMessageId = "2"
+        stale.unreadCount = 1
+        let list = makeList([(FakeProvider(network: .telegram, page: .init(chats: [stale], archived: [])), "telegram")])
+        await list.load()
+        let chat = try ChatViewModel(network: .telegram, chatKey: "telegram|t", title: "t", subtitle: "", canReply: true, draftStore: ChatDraftStore(defaults: XCTUnwrap(UserDefaults(suiteName: "ChatListViewModelTests-\(UUID().uuidString)"))))
+        _ = list.follow(chat, chatId: "telegram|t")
+        let latest = ChatMessage(id: "2", sender: ChatUser(id: "u", name: "U", avatarURL: nil), timestamp: Date(), text: "hi", isOwn: false)
+        chat.summaryDidChange?(latest, "hi", 0, nil)
+
+        list.updateChats([stale], accountId: "telegram")
+        XCTAssertEqual(list.chats.first?.unreadCount, 0, "the stale rebuilt row put the read chat's count back")
+
+        var newer = stale
+        newer.latestMessageId = "3"
+        newer.unreadCount = 2
+        list.updateChats([newer], accountId: "telegram")
+        XCTAssertEqual(list.chats.first?.unreadCount, 2, "a row with a newer message is the network's")
+    }
+
     private func makeList(_ providers: [(FakeProvider, String?)]) -> ChatListViewModel {
         ChatListViewModel(sources: {
             providers.map { ChatListSource(provider: $0.0, accountId: $0.1, label: $0.0.chatNetwork.rawValue) }
