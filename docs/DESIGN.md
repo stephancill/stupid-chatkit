@@ -35,6 +35,8 @@ Chat is one framework with an adapter per chat network (in stupid social: Apron,
 
 
 
+**Search on a Mac:** searching a chat shows a plain field under the bar instead of the system search field, whose presentation throws in an iPad app on macOS 27 (observed 2026-11-17). Temporary: try the system field again with each new iOS/macOS release.
+
 **Rules:** shared code never names a network or casts to one; a network-specific need becomes an optional capability any network could use; every declared capability is implemented (no silent no-ops); adapters are tested against recorded pages without the UI.
 
 ## Storage

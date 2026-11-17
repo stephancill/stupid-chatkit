@@ -82,11 +82,12 @@ public struct ChatView: View {
             }
             // On a background, so starting and ending a search doesn't rebuild the chat's view and lose its place.
             .background {
-                if isSearching {
+                if isSearching, !ChatPlainSearchField.isNeeded {
                     ChatSearchField(viewModel: viewModel)
                 }
             }
             .background { backShortcut }
+            .modifier(ChatPlainSearchBar(viewModel: viewModel, isSearching: isSearching))
             .task {
                 ChatKit.onEvent(.opened(network: viewModel.network))
                 await viewModel.connect()
@@ -135,6 +136,75 @@ private struct ChatSearchField: View {
                 try? await Task.sleep(for: .milliseconds(150))
                 isPresented = true
             }
+    }
+}
+
+/// Pins the Mac's search field under the bar while searching. In the bar itself (in place of the title pill) it
+/// never took focus.
+private struct ChatPlainSearchBar: ViewModifier {
+    @ObservedObject var viewModel: ChatViewModel
+    let isSearching: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *), ChatPlainSearchField.isNeeded {
+            content.safeAreaBar(edge: .top) {
+                if isSearching {
+                    ChatPlainSearchField(viewModel: viewModel)
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// Searching a chat on a Mac: a plain field under the bar. There, presenting the system search
+/// controller of a field in the navigation bar throws on macOS 27 (observed 2026-11-17, 27.0.1): its layout asks
+/// `UINavigationBar` for its default size, which reads the main screen's scene bounds through screen-based focus,
+/// unsupported when an app without multiple scenes runs on a Mac. Done or Escape ends the search.
+/// Temporary: try the system search field again with each new iOS/macOS release and remove this once it works.
+private struct ChatPlainSearchField: View {
+    static let isNeeded = ProcessInfo.processInfo.isiOSAppOnMac
+
+    @ObservedObject var viewModel: ChatViewModel
+    @State private var text = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Group {
+            if #available(iOS 26.0, *) {
+                field.glassEffect(.regular, in: .capsule)
+            } else {
+                field.background(.regularMaterial, in: Capsule())
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .onChange(of: text) { _, query in viewModel.updateSearch(query) }
+        .task {
+            // Focusing in the same pass the field appears doesn't take.
+            try? await Task.sleep(for: .milliseconds(150))
+            isFocused = true
+        }
+    }
+
+    private var field: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search Messages", text: $text)
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .submitLabel(.search)
+                .focused($isFocused)
+                .onSubmit { Task { await viewModel.submitSearch() } }
+            Button("Done") { viewModel.endSearch() }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 36)
     }
 }
 
