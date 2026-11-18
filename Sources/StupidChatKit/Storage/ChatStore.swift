@@ -543,6 +543,13 @@ public final class ChatStore: @unchecked Sendable {
         }, name as CFString, nil, .deliverImmediately)
     }
 
+    /// The observer holds the store unretained, so it must go with the store: a store's own write posts a
+    /// notification that arrives after a store opened for one write (an extension's) is released.
+    deinit {
+        guard darwinName != nil else { return }
+        CFNotificationCenterRemoveEveryObserver(CFNotificationCenterGetDarwinNotifyCenter(), Unmanaged.passUnretained(self).toOpaque())
+    }
+
     /// SQLite's `data_version` changes only when another connection commits, so it tells another process's writes
     /// from this store's own.
     private var dataVersion: Int64?

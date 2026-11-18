@@ -186,6 +186,23 @@ final class ChatStoreTests: XCTestCase {
         observation.cancel()
     }
 
+    /// An extension opens a store, writes a pushed message and lets it go; its own Darwin notification arrives
+    /// after (it crashed reading the freed store, observed 2026-11-18).
+    @MainActor
+    func testAStoreReleasedAfterWritingStopsListening() async throws {
+        let url = directory.appending(path: "shared.sqlite")
+        let name = "ChatStoreTests.\(UUID().uuidString)"
+        let app = try ChatStore(url: url, darwinNotificationName: name)
+        var reloads = 0
+        let observation = app.observe(chatKey: "other|chat") { reloads += 1 }
+        for id in 1 ... 3 {
+            try ChatStore(url: url, darwinNotificationName: name).write([record(id)], chatKey: "account|test:pushed")
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertGreaterThan(reloads, 0, "the app still hears the released stores' writes")
+        observation.cancel()
+    }
+
     func testChatKeysMatchBySuffix() throws {
         try store.apply(page(1 ... 1), for: .newest, chatKey: "a|telegram:user:1")
         try store.apply(page(1 ... 1), for: .newest, chatKey: "b|telegram:user:1")
