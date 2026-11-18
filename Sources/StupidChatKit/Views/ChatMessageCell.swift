@@ -316,23 +316,19 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     private let timeBackground = UIView()
     private let timeSpacer = UIView()
     private let timeLabel = UILabel()
-    /// After the time in chats with receipts: the clock while sending, then one check, then two, each in place
-    /// so the time never moves.
+    /// After the time on the user's messages: the clock while sending, then one check once sent, and two once seen
+    /// where the network reports it, each in place so the time never moves.
     private let statusSlot = UIView()
     private let slotClock = UIImageView(image: ChatMessageCell.clockImage)
     private let firstCheck = UIImageView(image: ChatMessageCell.checkImage)
     private let secondCheck = UIImageView(image: ChatMessageCell.checkImage)
-    /// Before the time while sending in chats without receipts, where nothing follows the time.
-    private let leadingClock = UIImageView(image: ChatMessageCell.clockImage)
     private var statusSlotWidth: NSLayoutConstraint!
     private var statusSlotGap: NSLayoutConstraint!
-    private var timeBackgroundToLabel: NSLayoutConstraint!
-    private var timeBackgroundToClock: NSLayoutConstraint!
     private let systemLabel = UILabel()
     /// Where a system row's card goes when tapped.
     private var systemLink: URL?
-    private let reactionsRow = FrameSnappingStackView()
-    private let reactionsContainer = FrameSnappingView()
+    private let reactionsRow = UIStackView()
+    private let reactionsContainer = UIView()
     /// Rows of buttons under the bubble, such as a bot's inline keyboard, as wide as the bubble.
     private let buttonsStack = UIStackView()
     private var buttonsTop: NSLayoutConstraint!
@@ -352,9 +348,9 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     private var accent = UIColor.systemBlue
     /// The row and status last shown, so a reconfigure can animate the change. Keyed by the row rather than the
     /// message, since a sending copy and the network's message have different ids.
-    private var shownStatus: (key: String, status: ChatMessageStatus?, leadingClock: Bool)?
+    private var shownStatus: (key: String, status: ChatMessageStatus?)?
     /// The message and reactions last shown, so a reconfigure can tell which chips are new.
-    private var shownReactions: (messageId: String, reactions: [ChatReaction])?
+    private var shownReactions: (messageId: String, emojis: Set<String>)?
     /// Copies of removed chips while they shrink out.
     private var outgoingChips: [UIView] = []
 
@@ -455,9 +451,6 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
             view.alpha = 0
             statusSlot.addSubview(view)
         }
-        leadingClock.translatesAutoresizingMaskIntoConstraints = false
-        leadingClock.alpha = 0
-        bubble.addSubview(leadingClock)
 
         systemLabel.numberOfLines = 0
         systemLabel.textAlignment = .center
@@ -504,8 +497,6 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         // inserted cells at their estimated (maximum) width.
         statusSlotWidth = statusSlot.widthAnchor.constraint(equalToConstant: 0)
         statusSlotGap = statusSlot.leadingAnchor.constraint(equalTo: timeLabel.trailingAnchor)
-        timeBackgroundToLabel = timeBackground.leadingAnchor.constraint(equalTo: timeLabel.leadingAnchor, constant: -6)
-        timeBackgroundToClock = timeBackground.leadingAnchor.constraint(equalTo: leadingClock.leadingAnchor, constant: -6)
         bubbleWidth = bubble.widthAnchor.constraint(equalToConstant: 0)
         bubbleWidth.priority = UILayoutPriority(999)
         bubbleWidth.isActive = true
@@ -535,9 +526,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
             firstCheck.centerYAnchor.constraint(equalTo: statusSlot.centerYAnchor),
             secondCheck.leadingAnchor.constraint(equalTo: statusSlot.leadingAnchor, constant: Self.secondCheckOffset),
             secondCheck.centerYAnchor.constraint(equalTo: statusSlot.centerYAnchor),
-            leadingClock.trailingAnchor.constraint(equalTo: timeLabel.leadingAnchor, constant: -Self.statusGap),
-            leadingClock.centerYAnchor.constraint(equalTo: timeLabel.centerYAnchor),
-            timeBackgroundToLabel,
+            timeBackground.leadingAnchor.constraint(equalTo: timeLabel.leadingAnchor, constant: -6),
             timeBackground.trailingAnchor.constraint(equalTo: statusSlot.trailingAnchor, constant: 6),
             timeBackground.topAnchor.constraint(equalTo: timeLabel.topAnchor, constant: -2),
             timeBackground.bottomAnchor.constraint(equalTo: timeLabel.bottomAnchor, constant: 2),
@@ -762,16 +751,15 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         let shownTime = message.isEdited && !message.isDeleted ? "edited \(time)" : time
         timeLabel.text = shownTime
         timeLabel.textColor = layout.isOwn ? UIColor.white.withAlphaComponent(0.75) : .secondaryLabel
-        let showsLeadingClock = message.isSending && status == nil
-        configureStatus(status, leadingClock: showsLeadingClock, key: statusKey ?? message.id)
+        configureStatus(status, key: statusKey ?? message.id)
         timeLabel.accessibilityLabel = switch status {
         case .sending: "Sending"
         case .sent: "\(shownTime), Sent"
         case .seen: "\(shownTime), Seen"
-        case nil: showsLeadingClock ? "Sending" : nil
+        case nil: nil
         }
         // The text keeps room for the time and what sits beside it.
-        let timeRowWidth = ceil(timeLabel.intrinsicContentSize.width) + Self.statusWidth(status: status, leadingClock: showsLeadingClock)
+        let timeRowWidth = ceil(timeLabel.intrinsicContentSize.width) + Self.statusWidth(status: status)
 
         let text: NSAttributedString? = if message.isDeleted {
             NSAttributedString(string: "Message deleted", attributes: [
@@ -840,7 +828,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         if timeOnImage {
             timeLabel.textColor = .white
         }
-        for view in [slotClock, firstCheck, secondCheck, leadingClock] {
+        for view in [slotClock, firstCheck, secondCheck] {
             view.tintColor = timeLabel.textColor
         }
 
@@ -1013,17 +1001,9 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     private func configureReactions(_ reactions: [ChatReaction], messageId: String) {
         // Like Telegram, a reaction that arrives on a shown message pops in, one that goes shrinks out, and the
         // rest just move.
-        let shown = shownReactions?.messageId == messageId ? shownReactions?.reactions : nil
-        let previous = shown.map { Set($0.map(\.emoji)) }
+        let previous = shownReactions?.messageId == messageId ? shownReactions?.emojis : nil
         let emojis = Set(reactions.map(\.emoji))
-        shownReactions = (messageId, reactions)
-        // Changed chips take their places at once, and only the bubble grows around them in the cell's animation.
-        // Configure lays the row out early, so its size is new while its position would still animate: a wider
-        // row started half its growth to the left and slid back, and the first chips slid in from where the
-        // hidden container sat.
-        let snapsFrames = shown != nil && shown != reactions
-        reactionsRow.snapsFrame = snapsFrames
-        reactionsContainer.snapsFrame = snapsFrames
+        shownReactions = (messageId, emojis)
         if previous != nil {
             for (emoji, chip) in chipEmojis.values where !emojis.contains(emoji) && chip.window != nil {
                 popOut(chip)
@@ -1238,34 +1218,30 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     /// One width for the clock and both checks, so a message keeps its size as its status changes.
     private static let statusSlotContentWidth = ceil(max((checkImage?.size.width ?? 10) + secondCheckOffset, clockImage?.size.width ?? 10))
 
-    private static func statusWidth(status: ChatMessageStatus?, leadingClock: Bool) -> CGFloat {
-        if status != nil { return statusGap + statusSlotContentWidth }
-        if leadingClock { return ceil(clockImage?.size.width ?? 10) + statusGap }
-        return 0
+    private static func statusWidth(status: ChatMessageStatus?) -> CGFloat {
+        status == nil ? 0 : statusGap + statusSlotContentWidth
     }
 
-    /// Shows the status in place. On the same row, a change animates as Telegram's does: the clock fades, a check
-    /// pops in beside it, and the second check pops in beside the first. Layer animations, as for reaction chips,
+    /// Shows the status in place. On the same row, the check pops in where the clock was, and the second check pops
+    /// in beside the first. Layer animations, as for reaction chips,
     /// since configure runs inside `apply`'s `performWithoutAnimation`.
-    private func configureStatus(_ status: ChatMessageStatus?, leadingClock showsLeadingClock: Bool, key: String) {
+    private func configureStatus(_ status: ChatMessageStatus?, key: String) {
         let previous = shownStatus?.key == key ? shownStatus : nil
-        shownStatus = (key, status, showsLeadingClock)
+        shownStatus = (key, status)
 
         statusSlotWidth.constant = status == nil ? 0 : Self.statusSlotContentWidth
         statusSlotGap.constant = status == nil ? 0 : Self.statusGap
-        timeBackgroundToLabel.isActive = !showsLeadingClock
-        timeBackgroundToClock.isActive = showsLeadingClock
 
         let animates = previous != nil && window != nil
-        setVisible(slotClock, status == .sending, animated: animates)
+        // The check takes the clock's place in one frame: a fading clock under it read as the message changing.
+        setVisible(slotClock, status == .sending, animated: false)
         setVisible(firstCheck, status == .sent || status == .seen, animated: animates)
         setVisible(secondCheck, status == .seen, animated: animates)
-        setVisible(leadingClock, showsLeadingClock, animated: animates)
 
-        // A row that stops showing a status, such as a message to yourself, slides its time into the space.
+        // A row that stops showing a status, such as a message deleted, slides its time into the space.
         if animates, let previous, previous.status != nil, status == nil {
             let slide = CABasicAnimation(keyPath: "transform.translation.x")
-            slide.fromValue = -Self.statusWidth(status: previous.status, leadingClock: false)
+            slide.fromValue = -Self.statusWidth(status: previous.status)
             slide.toValue = 0
             slide.duration = 0.25
             slide.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -1844,25 +1820,6 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
             loadImage(thumbnailURL, into: row.tile)
         }
         return row
-    }
-}
-
-/// Takes new frames at once while `snapsFrame` is set, even inside an animation, such as reaction chips while
-/// the cell around them grows.
-private final class FrameSnappingView: UIView {
-    var snapsFrame = false
-
-    override func action(for layer: CALayer, forKey event: String) -> CAAction? {
-        snapsFrame && (event == "position" || event == "bounds") ? NSNull() : super.action(for: layer, forKey: event)
-    }
-}
-
-/// `FrameSnappingView` for a stack view.
-private final class FrameSnappingStackView: UIStackView {
-    var snapsFrame = false
-
-    override func action(for layer: CALayer, forKey event: String) -> CAAction? {
-        snapsFrame && (event == "position" || event == "bounds") ? NSNull() : super.action(for: layer, forKey: event)
     }
 }
 

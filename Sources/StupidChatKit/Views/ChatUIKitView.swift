@@ -116,6 +116,11 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     private var hasEarlier = false
     private let historySpinner = UIActivityIndicatorView(style: .medium)
     private var pendingJumpTarget: String?
+    /// The send button's circle while a send from the composer waits for its message to appear, which then grows
+    /// out of the button into its bubble, like Messages.
+    private var sendFlightOrigin: CGRect?
+    /// The item whose bubble is hidden while its copy flies from the send button.
+    private var flyingKey: String?
     /// While a jump's scroll animates, the messages it passes neither page in history nor count as seen.
     private var isAnimatingJump = false
     private let jumpToLatestButton = UIButton(type: .system)
@@ -298,7 +303,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             let layout = bubbleLayout(at: index)
             let reply = message.replyToId.map(replyQuote(for:))
             prefetchReactorAvatars(on: message)
-            cell.bubbleView.alpha = id == focusedMessageId ? 0 : 1
+            cell.bubbleView.alpha = id == focusedMessageId || id == flyingKey ? 0 : 1
             let availableWidth = collectionView.bounds.width > 0 ? collectionView.bounds.width : view.bounds.width
             configuredWidth = availableWidth
             cell.configure(
@@ -918,6 +923,19 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         let wasAtBottom = isPinnedToBottom
         // The divider can appear after the cached messages first render, once history shows newer unread.
         let dividerAppeared = rows.contains(.unreadDivider) && !previousItems.contains(.unreadDivider)
+        // The newest message the composer just sent, flying from the send button when the list follows the bottom.
+        var flight: (key: String, origin: CGRect)?
+        if let origin = sendFlightOrigin,
+           let sent = messages.last(where: { $0.isOwn && $0.isSending && !previousItems.contains(.message(itemKey(for: $0.id))) })
+        {
+            sendFlightOrigin = nil
+            if wasAtBottom, !hasLater, hasScrolledInitially, pendingJumpTarget == nil, !isAnchoredToDivider, !dividerAppeared {
+                flight = (itemKey(for: sent.id), origin)
+                flyingKey = flight?.key
+            } else {
+                finishSendFlight()
+            }
+        }
 
         dataSource.apply(snapshot, animatingDifferences: false)
 
@@ -943,6 +961,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             // list settles at the bottom before it draws, rather than jumping and sliding back.
             scrollToBottom(animated: items.count > previousIds.count)
         }
+        if let flight { flySentMessage(key: flight.key, from: flight.origin) }
         DispatchQueue.main.async { [weak self] in self?.reportVisibleRead() }
     }
 
@@ -1431,13 +1450,84 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     }
 
     private func send() {
+        if editingMessage == nil, !sendButton.isHidden {
+            let circle = sendButton.imageView.map { $0.convert($0.bounds, to: view) } ?? sendButton.convert(sendButton.bounds, to: view)
+            let side = min(circle.width, circle.height)
+            sendFlightOrigin = CGRect(x: circle.midX - side / 2, y: circle.midY - side / 2, width: side, height: side)
+            // The button leaves as the message: no fading arrow under the copy that grows out of it.
+            sendButton.alpha = 0
+        }
         Task {
             await viewModel.send()
+            // Nothing new to show (a failure, or a send that posts nothing): bring the button back.
+            if sendFlightOrigin != nil {
+                sendFlightOrigin = nil
+                finishSendFlight()
+            }
             // Like Messages, sending shows your message at the bottom.
             if viewModel.errorMessage == nil {
                 await viewModel.jumpToLatest()
             }
         }
+    }
+
+    /// Grows a copy of the sent bubble out of the send button's circle and moves it to where the bubble settles, above
+    /// the composer: the list's own insert would slide it up from behind the composer's glass.
+    private func flySentMessage(key: String, from origin: CGRect) {
+        guard let indexPath = dataSource.indexPath(for: .message(key)),
+              let cell = collectionView.cellForItem(at: indexPath) as? ChatMessageCell
+        else { return finishSendFlight() }
+        let bubble = cell.bubbleView
+        // `scrollToBottom` has set the final offset, so this is where the bubble ends up.
+        let target = bubble.convert(bubble.bounds, to: view)
+        guard target.width > 0, target.height > 0, view.bounds.intersects(target) else { return finishSendFlight() }
+        // The bubble is hidden while its copy flies; render it shown.
+        cell.layoutIfNeeded()
+        bubble.alpha = 1
+        let snapshot = cell.focusSnapshot()
+        bubble.alpha = 0
+
+        let flight = UIView(frame: origin)
+        flight.backgroundColor = bubble.backgroundColor == .clear ? .systemBlue : bubble.backgroundColor
+        flight.layer.cornerRadius = origin.height / 2
+        flight.layer.cornerCurve = .continuous
+        flight.clipsToBounds = true
+        flight.isUserInteractionEnabled = false
+        // At its final size, held to the copy's trailing bottom corner, so the growing circle uncovers it.
+        let content = UIImageView(image: snapshot.image)
+        content.frame = CGRect(x: origin.width - target.width, y: origin.height - target.height, width: target.width, height: target.height)
+        content.autoresizingMask = [.flexibleLeftMargin, .flexibleTopMargin]
+        content.alpha = 0
+        flight.addSubview(content)
+        let arrow = UIImageView(image: UIImage(systemName: "arrow.up", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)))
+        arrow.tintColor = .white
+        arrow.center = CGPoint(x: origin.width / 2, y: origin.height / 2)
+        arrow.autoresizingMask = [.flexibleLeftMargin, .flexibleRightMargin, .flexibleTopMargin, .flexibleBottomMargin]
+        flight.addSubview(arrow)
+        view.addSubview(flight)
+
+        UIView.animate(withDuration: 0.12) { arrow.alpha = 0 }
+        UIView.animate(withDuration: 0.18, delay: 0.04) { content.alpha = 1 }
+        UIView.animate(withDuration: 0.42, delay: 0, usingSpringWithDamping: 0.86, initialSpringVelocity: 0, options: [.allowUserInteraction]) {
+            flight.frame = target
+            flight.layer.cornerRadius = snapshot.cornerRadius
+        } completion: { [weak self] _ in
+            self?.finishSendFlight()
+            flight.removeFromSuperview()
+        }
+    }
+
+    /// Shows the bubble that flew and the send button again.
+    private func finishSendFlight() {
+        if let key = flyingKey {
+            flyingKey = nil
+            if let indexPath = dataSource.indexPath(for: .message(key)),
+               let cell = collectionView.cellForItem(at: indexPath) as? ChatMessageCell, key != focusedMessageId
+            {
+                cell.bubbleView.alpha = 1
+            }
+        }
+        sendButton.alpha = 1
     }
 
     private func updateTextViewHeight() {
@@ -3047,15 +3137,12 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     }
 
     /// Reconfigures only the messages whose totals changed.
-    /// In chats with receipts, the user's messages show sending, then sent, then seen.
+    /// The user's messages show sending, then sent, then seen where the network reports it: the clock turns into a
+    /// check in place, so the bubble keeps its size once the network confirms it.
     private func status(of message: ChatMessage) -> ChatMessageStatus? {
-        guard viewModel.showsReadReceipts, message.isOwn, message.isUserMessage, !message.isDeleted else { return nil }
+        guard message.isOwn, message.isUserMessage, !message.isDeleted else { return nil }
         if message.isSending { return .sending }
-        return switch viewModel.receipt(for: message) {
-        case .sent: .sent
-        case .seen: .seen
-        case nil: nil
-        }
+        return viewModel.receipt(for: message) == .seen ? .seen : .sent
     }
 
     /// Re-renders the messages whose receipt changed; their size stays, since the time keeps room for the checks.
