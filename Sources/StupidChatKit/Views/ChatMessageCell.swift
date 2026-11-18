@@ -327,8 +327,8 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     private let systemLabel = UILabel()
     /// Where a system row's card goes when tapped.
     private var systemLink: URL?
-    private let reactionsRow = UIStackView()
-    private let reactionsContainer = UIView()
+    private let reactionsRow = FrameSnappingStackView()
+    private let reactionsContainer = FrameSnappingView()
     /// Rows of buttons under the bubble, such as a bot's inline keyboard, as wide as the bubble.
     private let buttonsStack = UIStackView()
     private var buttonsTop: NSLayoutConstraint!
@@ -350,7 +350,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     /// message, since a sending copy and the network's message have different ids.
     private var shownStatus: (key: String, status: ChatMessageStatus?)?
     /// The message and reactions last shown, so a reconfigure can tell which chips are new.
-    private var shownReactions: (messageId: String, emojis: Set<String>)?
+    private var shownReactions: (messageId: String, reactions: [ChatReaction])?
     /// Copies of removed chips while they shrink out.
     private var outgoingChips: [UIView] = []
 
@@ -1001,9 +1001,17 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     private func configureReactions(_ reactions: [ChatReaction], messageId: String) {
         // Like Telegram, a reaction that arrives on a shown message pops in, one that goes shrinks out, and the
         // rest just move.
-        let previous = shownReactions?.messageId == messageId ? shownReactions?.emojis : nil
+        let shown = shownReactions?.messageId == messageId ? shownReactions?.reactions : nil
+        let previous = shown.map { Set($0.map(\.emoji)) }
         let emojis = Set(reactions.map(\.emoji))
-        shownReactions = (messageId, emojis)
+        shownReactions = (messageId, reactions)
+        // Changed chips take their places at once, and only the bubble grows around them in the cell's animation.
+        // Configure lays the row out early, so its size is new while its position would still animate: a wider
+        // row started half its growth to the left and slid back, and the first chips slid in from where the
+        // hidden container sat.
+        let snapsFrames = shown != nil && shown != reactions
+        reactionsRow.snapsFrame = snapsFrames
+        reactionsContainer.snapsFrame = snapsFrames
         if previous != nil {
             for (emoji, chip) in chipEmojis.values where !emojis.contains(emoji) && chip.window != nil {
                 popOut(chip)
@@ -1820,6 +1828,25 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
             loadImage(thumbnailURL, into: row.tile)
         }
         return row
+    }
+}
+
+/// Takes new frames at once while `snapsFrame` is set, even inside an animation, such as reaction chips while
+/// the cell around them grows.
+private final class FrameSnappingView: UIView {
+    var snapsFrame = false
+
+    override func action(for layer: CALayer, forKey event: String) -> CAAction? {
+        snapsFrame && (event == "position" || event == "bounds") ? NSNull() : super.action(for: layer, forKey: event)
+    }
+}
+
+/// `FrameSnappingView` for a stack view.
+private final class FrameSnappingStackView: UIStackView {
+    var snapsFrame = false
+
+    override func action(for layer: CALayer, forKey event: String) -> CAAction? {
+        snapsFrame && (event == "position" || event == "bounds") ? NSNull() : super.action(for: layer, forKey: event)
     }
 }
 
