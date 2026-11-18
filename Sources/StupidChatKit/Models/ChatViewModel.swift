@@ -1152,6 +1152,15 @@ public class ChatViewModel: ObservableObject {
         nil
     }
 
+    /// The user's newest message when it can be edited, for Up in an empty composer; `nil` while a later window
+    /// of the chat isn't loaded, since the newest one loaded wouldn't be their latest.
+    public var lastEditableMessage: ChatMessage? {
+        guard !hasLaterMessages, let message = messages.last(where: { $0.isOwn && $0.isUserMessage && !$0.isDeleted }),
+              canEdit(message)
+        else { return nil }
+        return message
+    }
+
     /// Whether the Edit action is offered for the message.
     public func canEdit(_ message: ChatMessage) -> Bool {
         message.isOwn && message.isUserMessage && !message.isSending && !message.isDeleted && !isReadOnly

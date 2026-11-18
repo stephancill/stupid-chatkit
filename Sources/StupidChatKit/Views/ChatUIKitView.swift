@@ -449,6 +449,14 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             send()
         }
         textView.onEscape = { [weak self] in self?.goBack() }
+        textView.canEditLast = { [weak self] in
+            guard let self else { return false }
+            return editingMessage == nil && viewModel.attachments.isEmpty && viewModel.lastEditableMessage != nil
+        }
+        textView.onEditLast = { [weak self] in
+            guard let self, let message = viewModel.lastEditableMessage else { return }
+            beginEditing(message.id)
+        }
         textView.canPasteImage = { [weak self] in
             guard let self else { return false }
             return viewModel.canAttach && editingMessage == nil

@@ -35,10 +35,14 @@ final class ChatLinkTapGesture: UITapGestureRecognizer {
 /// Return still adds a line. While an input method is composing, Return confirms the composition instead.
 /// On a Mac, keys reach the text view as inserted text rather than presses, so Return arrives as a newline.
 /// Escape runs `onEscape` (leaving the chat), ahead of the text view's own handling, unless it is cancelling a
-/// composition. Pasting an image hands it to `onPasteImage` (staging it as an attachment) while `canPasteImage`.
+/// composition. Up in an empty composer runs `onEditLast` (editing the user's last message) while `canEditLast`.
+/// Pasting an image hands it to `onPasteImage` (staging it as an attachment) while `canPasteImage`.
 final class ChatComposerTextView: UITextView {
     var onReturn: () -> Void = {}
     var onEscape: () -> Void = {}
+    /// Up in an empty composer edits the user's last message while `canEditLast`.
+    var canEditLast: () -> Bool = { false }
+    var onEditLast: () -> Void = {}
     var canPasteImage: () -> Bool = { false }
     var onPasteImage: (NSItemProvider) -> Void = { _ in }
     private let isOnMac = ProcessInfo.processInfo.isiOSAppOnMac
@@ -50,6 +54,11 @@ final class ChatComposerTextView: UITextView {
             escape.wantsPriorityOverSystemBehavior = true
             commands.append(escape)
         }
+        if markedTextRange == nil, text.isEmpty, canEditLast() {
+            let up = UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(upPressed))
+            up.wantsPriorityOverSystemBehavior = true
+            commands.append(up)
+        }
         if isOnMac {
             commands += [UIKeyModifierFlags.shift, .alternate].map {
                 UIKeyCommand(input: "\r", modifierFlags: $0, action: #selector(insertLineBreak))
@@ -60,6 +69,10 @@ final class ChatComposerTextView: UITextView {
 
     @objc private func escapePressed() {
         onEscape()
+    }
+
+    @objc private func upPressed() {
+        onEditLast()
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {

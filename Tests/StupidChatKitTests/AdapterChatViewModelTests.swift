@@ -895,6 +895,16 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testTheLastEditableMessageIsTheUsersNewest() async {
+        let adapter = FakeEditingAdapter()
+        adapter.pages = [[message(1, own: true), message(2, own: true), message(3)]]
+        let chat = makeChat(adapter)
+        await chat.connect()
+        XCTAssertEqual(chat.lastEditableMessage?.id, "2", "the user's newest, past someone else's reply")
+        chat.disconnect()
+        XCTAssertNil(makeChat(FakeAdapter()).lastEditableMessage, "a chat without editing")
+    }
+
     func testChatsWithoutEditingOfferNone() async {
         let adapter = FakeAdapter()
         adapter.pages = [[message(2, own: true)]]
