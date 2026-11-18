@@ -2374,7 +2374,11 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         }
         if let link = viewModel.link(toMessage: id) {
             menu.items.append(.action(ChatMessageMenu.Action(title: "Copy Link", image: UIImage(systemName: "link")) {
-                UIPasteboard.general.url = link
+                // As text too: on a Mac, a URL alone is `public.url`, which most text fields don't paste.
+                UIPasteboard.general.setItems([[
+                    UTType.url.identifier: link,
+                    UTType.utf8PlainText.identifier: link.absoluteString,
+                ]])
             }))
         }
         // A message with a reminder offers Mark as Done in place of Remind Me.
