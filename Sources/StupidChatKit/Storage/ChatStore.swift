@@ -207,12 +207,14 @@ public final class ChatStore: @unchecked Sendable {
     /// action). A stored record is updated where it is. A new message continues the newest chunk while that is
     /// current; newer than everything stored, it starts a new newest chunk; anything else is left to the page that
     /// will bring it. Related records are always kept.
-    public func write(_ records: [ChatRecord], chatKey: String) throws {
+    /// `movedIn` names records that moved into this chat from another (`ChatPage.movedIn`): each goes with the stored
+    /// stretch its sort key falls in, else with a current newest one.
+    public func write(_ records: [ChatRecord], movedIn: Set<String> = [], chatKey: String) throws {
         guard !records.isEmpty else { return }
         try locked {
             try database.transaction {
                 try ensureChat(chatKey)
-                try writeLive(records, chat: chatKey)
+                try writeLive(records, movedIn: movedIn, chat: chatKey)
             }
         }
         didChange([chatKey])
@@ -687,7 +689,13 @@ public final class ChatStore: @unchecked Sendable {
         return true
     }
 
-    private func writeLive(_ records: [ChatRecord], chat: String) throws {
+    /// The stored chunk whose messages span `sortKey`.
+    private func chunk(containing sortKey: Int64, chat: String) throws -> Int64? {
+        let chunks = try database.rows("SELECT id FROM chunk WHERE chat = ?", [.text(chat)], map: { $0.int(0) })
+        return try chunks.first { try span(chunk: $0)?.contains(sortKey) == true }
+    }
+
+    private func writeLive(_ records: [ChatRecord], movedIn: Set<String> = [], chat: String) throws {
         let epoch = currentEpoch(chat: chat)
         for record in records.sorted(by: { ($0.sortKey, $0.id) < ($1.sortKey, $1.id) }) {
             if try replaceStored(record, chat: chat) {
@@ -696,6 +704,15 @@ public final class ChatStore: @unchecked Sendable {
             let newest = try newest(chat: chat)
             if !record.isMessage {
                 try insert(record, chat: chat, chunk: nil)
+                continue
+            }
+            let isCurrent = newest.map { $0.reachesNewest && $0.epoch == epoch } ?? false
+            if movedIn.contains(record.id) {
+                // A message that moved here goes with the stretch its sort key falls in, else with a current
+                // newest stretch; otherwise the next page brings it.
+                if let chunk = try chunk(containing: record.sortKey, chat: chat) ?? (isCurrent ? newest?.id : nil) {
+                    try insert(record, chat: chat, chunk: chunk)
+                }
                 continue
             }
             let span = try newest.flatMap { try span(chunk: $0.id) }
@@ -765,16 +782,24 @@ public final class ChatStore: @unchecked Sendable {
         }
 
         var parts = [pagePart]
+        // A `.before` page continues its chunk downward, so that chunk is never the earlier edge, even when messages
+        // moved into it reach below the page (`ChatPage.movedIn`).
+        let continued: Int64? = if case .before = request { adjacent } else { nil }
+        var olderParts = [pagePart]
         for chunk in joined {
-            try parts.append(Part(
+            let part = try Part(
                 span: span(chunk: chunk.id), hasEarlier: chunk.hasEarlier, earlier: chunk.earlierCursor?.value,
                 reachesNewest: chunk.reachesNewest, later: chunk.laterCursor?.value, epoch: chunk.epoch,
-            ))
+            )
+            parts.append(part)
+            if chunk.id != continued {
+                olderParts.append(part)
+            }
         }
         // The earlier edge is the oldest part's; a `.before` page with nothing in it means the chunk it continues
         // starts the chat.
         let oldest: Part = if case .before = request, covered == nil { pagePart } else {
-            parts.filter { $0.span != nil }.min { $0.span!.lowerBound < $1.span!.lowerBound } ?? pagePart
+            olderParts.filter { $0.span != nil }.min { $0.span!.lowerBound < $1.span!.lowerBound } ?? pagePart
         }
         let reachesNewest = parts.contains(where: \.reachesNewest)
         let newestPart = parts.filter { $0.span != nil }.max { $0.span!.upperBound < $1.span!.upperBound } ?? pagePart
@@ -836,6 +861,8 @@ public final class ChatStore: @unchecked Sendable {
                 try insert(record, chat: chat, chunk: nil)
             } else if inside {
                 try insert(record, chat: chat, chunk: target)
+            } else if page.movedIn.contains(record.id) {
+                try insert(record, chat: chat, chunk: chunk(containing: record.sortKey, chat: chat) ?? target)
             }
         }
         return try chunk(id: target)!

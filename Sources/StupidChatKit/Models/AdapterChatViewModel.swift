@@ -167,9 +167,10 @@ public final class ChatHistory {
         try store.apply(page, for: .newest, chatKey: chatKey)
     }
 
-    /// Stores records that arrived outside a page (`ChatStore.write`).
-    public func write(_ records: [ChatRecord]) throws {
-        try store.write(records, chatKey: chatKey)
+    /// Stores records that arrived outside a page (`ChatStore.write`); `movedIn` names those that moved here from
+    /// another chat.
+    public func write(_ records: [ChatRecord], movedIn: Set<String> = []) throws {
+        try store.write(records, movedIn: movedIn, chatKey: chatKey)
     }
 
     public func delete(ids: [String]) throws {

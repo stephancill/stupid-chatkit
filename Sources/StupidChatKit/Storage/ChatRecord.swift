@@ -75,20 +75,25 @@ public struct ChatPage: Sendable {
     /// Whether the page holds every message in `covers`, so a stored one it lacks was deleted. A network that
     /// reports deletions as records of their own (tombstones) says false.
     public var isComplete: Bool
+    /// Records that moved into this chat from another, such as messages moved into a thread: they belong in the
+    /// chat at their sort keys wherever those fall, which for an old message is outside `covers`. Each is stored
+    /// with the stored stretch its sort key falls in, else with the page's.
+    public var movedIn: Set<String>
 
-    public init(records: [ChatRecord], earlier: ChatCursor?, later: ChatCursor? = nil, covers: ClosedRange<Int64>? = nil, isComplete: Bool = true) {
+    public init(records: [ChatRecord], earlier: ChatCursor?, later: ChatCursor? = nil, covers: ClosedRange<Int64>? = nil, isComplete: Bool = true, movedIn: Set<String> = []) {
         self.records = records
         self.earlier = earlier
         self.later = later
         self.covers = covers
         self.isComplete = isComplete
+        self.movedIn = movedIn
     }
 
     var coveredRange: ClosedRange<Int64>? {
         if let covers {
             return covers
         }
-        let keys = records.filter(\.isMessage).map(\.sortKey)
+        let keys = records.filter { $0.isMessage && !movedIn.contains($0.id) }.map(\.sortKey)
         guard let low = keys.min(), let high = keys.max() else { return nil }
         return low ... high
     }

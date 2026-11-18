@@ -329,6 +329,8 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     private var timeBackgroundToLabel: NSLayoutConstraint!
     private var timeBackgroundToClock: NSLayoutConstraint!
     private let systemLabel = UILabel()
+    /// Where a system row's card goes when tapped.
+    private var systemLink: URL?
     private let reactionsRow = UIStackView()
     private let reactionsContainer = UIView()
     /// Rows of buttons under the bubble, such as a bot's inline keyboard, as wide as the bubble.
@@ -460,6 +462,10 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         systemLabel.numberOfLines = 0
         systemLabel.textAlignment = .center
         systemLabel.translatesAutoresizingMaskIntoConstraints = false
+        systemLabel.addGestureRecognizer(ChatActionTapGesture { [weak self] in
+            guard let self, let systemLink else { return }
+            actions.openLink(systemLink)
+        })
         contentView.addSubview(systemLabel)
 
         replyIcon.tintColor = .white
@@ -704,10 +710,11 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         configureButtons(layout.isSystem || message.isDeleted ? [] : message.buttons)
 
         if layout.isSystem {
-            configureSystem(message: message, body: body, startsGroup: layout.startsGroup)
+            configureSystem(message: message, body: body, embeds: embeds, startsGroup: layout.startsGroup)
             return
         }
         systemLabel.isHidden = true
+        systemLink = nil
         systemTop.isActive = false
         systemBottom.isActive = false
         bubble.isHidden = false
@@ -1146,7 +1153,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         return UITargetedPreview(view: chip, parameters: parameters)
     }
 
-    private func configureSystem(message: ChatMessage, body: NSAttributedString?, startsGroup: Bool) {
+    private func configureSystem(message: ChatMessage, body: NSAttributedString?, embeds: [ChatEmbed], startsGroup: Bool) {
         bubble.isHidden = true
         avatarView.isHidden = true
         bubbleTop.isActive = false
@@ -1156,10 +1163,44 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         systemTop.isActive = true
         systemBottom.isActive = true
         systemTop.constant = startsGroup ? 10 : 4
+        let card = embeds.lazy.compactMap { embed -> (title: String, subtitle: String?, systemImage: String, link: URL?)? in
+            guard case let .card(title, subtitle, systemImage, _, link) = embed else { return nil }
+            return (title, subtitle, systemImage, link)
+        }.first
+        systemLink = card?.link
+        systemLabel.isUserInteractionEnabled = card?.link != nil
+        systemLabel.accessibilityTraits = card?.link != nil ? .button : .staticText
+        if let card {
+            systemLabel.attributedText = Self.systemCard(caption: body, title: card.title, subtitle: card.subtitle, systemImage: card.systemImage)
+            return
+        }
         systemLabel.attributedText = body ?? NSAttributedString(string: message.sender.name, attributes: [
             .font: UIFont.preferredFont(forTextStyle: .footnote),
             .foregroundColor: UIColor.secondaryLabel,
         ])
+    }
+
+    /// A card in a system row, such as a thread where it was started: its symbol and title in the tint color, then
+    /// its subtitle, under the row's caption, all centered.
+    private static func systemCard(caption: NSAttributedString?, title: String, subtitle: String?, systemImage: String) -> NSAttributedString {
+        let footnote = UIFont.preferredFont(forTextStyle: .footnote)
+        let text = NSMutableAttributedString()
+        if let caption {
+            text.append(caption)
+            text.append(NSAttributedString(string: "\n", attributes: [.font: footnote]))
+        }
+        let titleFont = UIFont.preferredFont(forTextStyle: .subheadline).withWeight(.semibold)
+        if let symbol = UIImage(systemName: systemImage, withConfiguration: UIImage.SymbolConfiguration(font: titleFont, scale: .small))?
+            .withTintColor(.tintColor, renderingMode: .alwaysOriginal)
+        {
+            text.append(NSAttributedString(attachment: NSTextAttachment(image: symbol)))
+            text.append(NSAttributedString(string: " ", attributes: [.font: titleFont]))
+        }
+        text.append(NSAttributedString(string: title, attributes: [.font: titleFont, .foregroundColor: UIColor.tintColor]))
+        if let subtitle, !subtitle.isEmpty {
+            text.append(NSAttributedString(string: "\n" + subtitle, attributes: [.font: footnote, .foregroundColor: UIColor.secondaryLabel]))
+        }
+        return text
     }
 
     /// Appends the time again in clear text, so the visible time label sits on the last line when it fits

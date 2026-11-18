@@ -87,6 +87,34 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertEqual(try store.record(id: "11", chatKey: chat)?.data, Data("edited".utf8))
     }
 
+    func testMessagesMovedInAreStoredOutsideAPagesCoveredRange() throws {
+        // A thread: its log starts at 100, and the messages moved into it keep their older ids.
+        let newest = ChatPage(records: [record(5), record(7), record(101)], earlier: ChatCursor("99"), covers: 100 ... 101, isComplete: false, movedIn: ["5", "7"])
+        try store.apply(newest, for: .newest, chatKey: chat)
+        XCTAssertEqual(try newestIds(), ["5", "7", "101"])
+        let chunk = try store.window(chatKey: chat, at: .newest(count: 10)).chunk?.id
+        let earlier = ChatPage(records: [record(2), record(6)], earlier: nil, covers: 98 ... 99, isComplete: false, movedIn: ["2", "6"])
+        try store.apply(earlier, for: .before(ChatCursor("99")), chatKey: chat, adjacentTo: chunk)
+        XCTAssertEqual(try newestIds(), ["2", "5", "6", "7", "101"])
+        XCTAssertFalse(try store.window(chatKey: chat, at: .newest(count: 10)).hasEarlier)
+
+        try store.write([record(4)], movedIn: ["4"], chatKey: chat)
+        XCTAssertEqual(try newestIds(), ["2", "4", "5", "6", "7", "101"], "a live move goes where its id falls")
+        try store.write([record(1)], chatKey: chat)
+        XCTAssertFalse(try newestIds().contains("1"), "an old message that didn't move waits for its page")
+    }
+
+    func testMessagesMovedInGoWithTheStretchTheyFallIn() throws {
+        try store.apply(page(1 ... 5), for: .newest, chatKey: chat)
+        try store.apply(page(20 ... 24), for: .newest, chatKey: chat)
+        let moved = ChatPage(records: [record(3, version: 1), record(24), record(25)], earlier: ChatCursor("23"), covers: 24 ... 25, isComplete: false, movedIn: ["3"])
+        try store.apply(moved, for: .newest, chatKey: chat)
+        try store.write([record(4)], movedIn: ["4"], chatKey: chat)
+        XCTAssertEqual(try newestIds(), ["20", "21", "22", "23", "24", "25"], "stored messages stay where they are")
+        try store.write([record(10)], movedIn: ["10"], chatKey: chat)
+        XCTAssertEqual(try newestIds(), ["10", "20", "21", "22", "23", "24", "25"], "in a gap, a current newest stretch takes it")
+    }
+
     func testLiveRecordsContinueACurrentChunkAndStartANewOneAfterAMissedStretch() throws {
         try store.apply(page(1 ... 3), for: .newest, chatKey: chat)
         try store.write([record(4)], chatKey: chat)
