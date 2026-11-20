@@ -317,6 +317,25 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertEqual(asked, ["telegram|t"])
     }
 
+    func testLinksInRowsAreAskedForBeforeTheChatOpens() async throws {
+        var asked: [URL] = []
+        ChatKit.resolveLink = { url in
+            asked.append(url)
+            return nil
+        }
+        defer { ChatKit.resolveLink = nil }
+        var linked = row("t", .telegram, minutesAgo: 1)
+        linked.preview = "Ada: look https://x.com/ada/status/1"
+        let list = makeList([(FakeProvider(network: .telegram, page: .init(chats: [linked, row("s", .spotify, minutesAgo: 2)], archived: [])), "telegram")])
+        await list.load()
+        XCTAssertEqual(asked, try [XCTUnwrap(URL(string: "https://x.com/ada/status/1"))])
+        list.updateChats([linked], accountId: "telegram")
+        XCTAssertEqual(asked.count, 1, "an unchanged preview isn't asked again")
+        linked.preview = "Ada: and https://x.com/ada/status/2"
+        list.updateChats([linked], accountId: "telegram")
+        XCTAssertEqual(asked.last, URL(string: "https://x.com/ada/status/2"))
+    }
+
     private func chat() -> ChatViewModel {
         ChatViewModel(network: .telegram, chatKey: "telegram|t", title: "t", subtitle: "", canReply: true, draftStore: ChatDraftStore(defaults: UserDefaults(suiteName: "ChatListViewModelTests-\(UUID().uuidString)")!))
     }

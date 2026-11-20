@@ -495,6 +495,9 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     private var isOpen = false
     /// Messages the user read that the network hadn't confirmed when they did, so the count drops at once.
     private var readLocally: Set<String> = []
+    /// The newest message `markRead(upTo:)` has already counted, so the scroll frames that show no newer one skip
+    /// going through history again.
+    private var readLocallyThrough: String?
     /// The newest message seen before the chat connected, read once it has.
     private var readOnConnect: ChatMessage?
     private var isConnecting = false
@@ -1207,8 +1210,11 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             }
             return
         }
-        readLocally.formUnion(history[...index].filter(isUnread).map(\.id))
-        updateUnreadCount()
+        if readLocallyThrough.flatMap({ through in history.firstIndex { $0.id == through } }).map({ $0 < index }) ?? true {
+            readLocally.formUnion(history[...index].filter(isUnread).map(\.id))
+            readLocallyThrough = shown.id
+            updateUnreadCount()
+        }
         if let send = adapter.markRead(upTo: shown) {
             scheduleReadMarker(send)
         }

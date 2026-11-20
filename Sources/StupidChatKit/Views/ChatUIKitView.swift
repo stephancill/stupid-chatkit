@@ -937,6 +937,10 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             }
         }
 
+        // A message that changes size, such as a link drawn as the post it points at once that loads, would move
+        // everything below it; off the bottom, the message at the top of the screen stays where it is instead.
+        let anchor = changed.isEmpty || !hasScrolledInitially ? nil : topVisibleAnchor()
+
         dataSource.apply(snapshot, animatingDifferences: false)
 
         if pendingJumpTarget != nil {
@@ -960,9 +964,38 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             // message replacing its "sending" copy adds nothing: its new cell starts at an estimated height, so the
             // list settles at the bottom before it draws, rather than jumping and sliding back.
             scrollToBottom(animated: items.count > previousIds.count)
+        } else if let anchor {
+            keepOnScreen(anchor)
         }
         if let flight { flySentMessage(key: flight.key, from: flight.origin) }
         DispatchQueue.main.async { [weak self] in self?.reportVisibleRead() }
+    }
+
+    /// The topmost item whose top is on screen (else the topmost visible one), and how far below the top of the
+    /// scroll view it sits.
+    private func topVisibleAnchor() -> (item: Item, offset: CGFloat)? {
+        let visibleTop = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+        let visible = collectionView.indexPathsForVisibleItems.compactMap { indexPath -> (item: Item, minY: CGFloat)? in
+            guard let item = dataSource.itemIdentifier(for: indexPath),
+                  let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame
+            else { return nil }
+            return (item, frame.minY)
+        }.sorted { $0.minY < $1.minY }
+        guard let top = visible.first(where: { $0.minY >= visibleTop }) ?? visible.first else { return nil }
+        return (top.item, top.minY - collectionView.contentOffset.y)
+    }
+
+    private func keepOnScreen(_ anchor: (item: Item, offset: CGFloat)) {
+        collectionView.layoutIfNeeded()
+        guard let indexPath = dataSource.indexPath(for: anchor.item),
+              let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame
+        else { return }
+        let inset = collectionView.adjustedContentInset
+        let maxY = max(-inset.top, collectionView.contentSize.height - collectionView.bounds.height + inset.bottom)
+        let y = min(max(frame.minY - anchor.offset, -inset.top), maxY)
+        if abs(y - collectionView.contentOffset.y) > 0.5 {
+            collectionView.contentOffset.y = y
+        }
     }
 
     /// Messages split by the day they were sent, in order. A message without a time joins the one before it, and one

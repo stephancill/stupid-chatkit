@@ -1357,12 +1357,18 @@ public class ChatViewModel: ObservableObject {
     private func links(in text: String?) -> [URL] {
         guard let text, text.contains("http") else { return [] }
         if let found = textLinks[text] { return found }
-        let range = NSRange(text.startIndex..., in: text)
-        let found = (Self.linkDetector?.matches(in: text, range: range) ?? [])
-            .compactMap(\.url)
-            .filter { ["http", "https"].contains($0.scheme?.lowercased()) }
+        let found = Self.webLinks(in: text)
         textLinks[text] = found
         return found
+    }
+
+    /// The web links in a text, as `resolveLink` is asked for them.
+    static func webLinks(in text: String) -> [URL] {
+        guard text.contains("http") else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return (linkDetector?.matches(in: text, range: range) ?? [])
+            .compactMap(\.url)
+            .filter { ["http", "https"].contains($0.scheme?.lowercased()) }
     }
 
     /// The picture beside the title: the other person in a one-to-one chat, else the chat's own from its row.

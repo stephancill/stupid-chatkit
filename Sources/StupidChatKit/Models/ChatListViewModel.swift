@@ -279,6 +279,8 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
 
     /// Each prefetched row's id and state, so a row loads again only once it has changed.
     private var prefetched: Set<String> = []
+    /// Each row's preview when its links were last asked for.
+    private var linkPreviews: [String: String] = [:]
     private var prefetchTask: Task<Void, Never>?
     private var prefetchesAgain = false
 
@@ -546,6 +548,7 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         chats = summaries.sorted { ($0.timestamp ?? .distantPast) > ($1.timestamp ?? .distantPast) }
         hasLoaded = true
         schedulePrefetch()
+        preloadLinks(in: chats)
         if let data = try? JSONEncoder().encode(chats) {
             try? data.write(to: cacheURL, options: .atomic)
         }
@@ -555,6 +558,20 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         archivedChats = summaries.sorted { ($0.timestamp ?? .distantPast) > ($1.timestamp ?? .distantPast) }
         if let data = try? JSONEncoder().encode(archivedChats) {
             try? data.write(to: archiveCacheURL, options: .atomic)
+        }
+    }
+
+    /// Asks `ChatKit.resolveLink` for the links in each changed row's latest message, so what it draws for them
+    /// (such as a post) has loaded before the chat opens, rather than growing the message once it has. Loading ahead
+    /// stores messages without rendering them, so this is what reaches links in messages that arrive while away.
+    private func preloadLinks(in rows: [Summary]) {
+        guard let resolve = ChatKit.resolveLink else { return }
+        for row in rows {
+            guard let preview = row.preview, linkPreviews[row.id] != preview else { continue }
+            linkPreviews[row.id] = preview
+            for url in ChatViewModel.webLinks(in: preview) {
+                _ = resolve(url)
+            }
         }
     }
 

@@ -307,6 +307,9 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     private let reminderLabel = UILabel()
     private let replyView = ChatReplyQuoteView()
     private let bodyLabel = ChatLinkLabel()
+    /// Posts' text labels and how much narrower than the bubble's content each is, so they wrap at their width from
+    /// the first measurement too (see `bodyLabel.preferredMaxLayoutWidth`).
+    private var postTextLabels: [(label: UILabel, inset: CGFloat)] = []
     private let embedsStack = UIStackView()
     /// Uploaded images, edge to edge at the bubble's top like Telegram, between the header and the caption.
     private let mediaStack = UIStackView()
@@ -695,6 +698,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         shownImages = [:]
         defer { previousImages = [:] }
         embedsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        postTextLabels = []
         mediaStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         configureButtons(layout.isSystem || message.isDeleted ? [] : message.buttons)
 
@@ -835,7 +839,12 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         // The text wraps at the bubble's width from the first measurement. Left to Auto Layout, a multi-line label
         // first wraps at its previous width, so a cell scrolled into view measured lines too tall and then shrank,
         // moving the messages below it.
-        defer { bodyLabel.preferredMaxLayoutWidth = max(0, bubbleWidth.constant - 24) }
+        defer {
+            bodyLabel.preferredMaxLayoutWidth = max(0, bubbleWidth.constant - 24)
+            for (label, inset) in postTextLabels {
+                label.preferredMaxLayoutWidth = max(0, bubbleWidth.constant - 24 - inset)
+            }
+        }
         if hasMedia {
             // The images set the width, as in Telegram; a longer name, caption or button wraps or truncates.
             bubbleWidth.constant = ceil(images.map(Self.fittingWidth).max() ?? 0) + 4
@@ -1486,7 +1495,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         let isExpanded = actions.isEmbedExpanded(index)
         var rows: [UIView] = [postHeader(post, compact: false)]
         if !post.text.isEmpty {
-            let text = postText(post.text, lines: isExpanded ? 0 : 12)
+            let text = postText(post.text, lines: isExpanded ? 0 : 12, inset: Self.postPadding * 2)
             text.addGestureRecognizer(ChatActionTapGesture { [weak self] in self?.actions.toggleEmbed(index) })
             text.accessibilityHint = isExpanded ? "Shows less" : "Shows the whole post"
             rows.append(text)
@@ -1553,7 +1562,9 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
     /// The quoted post: a smaller header, four lines of text and its first photo or video beside them.
     private func quotedPost(_ post: ChatPost, index: Int) -> UIView {
         var rows: [UIView] = [postHeader(post, compact: true)]
-        let text = postText(post.text.isEmpty ? Self.mediaSummary(post.media) : post.text, lines: 4)
+        // Inside the post's frame and its own, beside the thumbnail when there is one.
+        let inset = Self.postPadding * 4 + (post.media.isEmpty ? 0 : 56 + 8)
+        let text = postText(post.text.isEmpty ? Self.mediaSummary(post.media) : post.text, lines: 4, inset: inset)
         if let first = post.media.first {
             let thumbnail = makeView(for: first, index: index)
             thumbnail.constraints.filter { $0.firstItem === thumbnail && [.width, .height].contains($0.firstAttribute) }.forEach { $0.isActive = false }
@@ -1581,8 +1592,9 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         return frame
     }
 
-    private func postText(_ text: String, lines: Int) -> UILabel {
+    private func postText(_ text: String, lines: Int, inset: CGFloat) -> UILabel {
         let label = UILabel()
+        postTextLabels.append((label, inset))
         label.text = text
         label.font = .preferredFont(forTextStyle: .subheadline)
         label.adjustsFontForContentSizeCategory = true
@@ -1662,13 +1674,15 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         return row
     }
 
+    private static let postPadding: CGFloat = 10
+
     private func postFrame(_ rows: [UIView], cornerRadius: CGFloat) -> UIStackView {
         let stack = UIStackView(arrangedSubviews: rows)
         stack.axis = .vertical
         stack.spacing = 8
         stack.alignment = .fill
         stack.isLayoutMarginsRelativeArrangement = true
-        stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10)
+        stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: Self.postPadding, leading: Self.postPadding, bottom: Self.postPadding, trailing: Self.postPadding)
         stack.layer.cornerRadius = cornerRadius
         stack.layer.cornerCurve = .continuous
         stack.layer.borderWidth = 1

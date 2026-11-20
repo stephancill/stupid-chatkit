@@ -327,6 +327,22 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testMarkingReadAgainWithoutANewerMessageSkipsHistory() async {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2), message(3)]]
+        let chat = makeChat(adapter)
+        await chat.connect()
+        chat.markRead(upTo: message(2))
+        let checks = adapter.readPositionChecks
+        chat.markRead(upTo: message(2))
+        chat.markRead(upTo: message(1))
+        XCTAssertEqual(adapter.readPositionChecks, checks, "every scroll frame marks read; one showing nothing newer costs nothing")
+        XCTAssertEqual(chat.unreadCount, 1)
+        chat.markRead(upTo: message(3))
+        XCTAssertEqual(chat.unreadCount, 0)
+        chat.disconnect()
+    }
+
     func testAFailedReadMarkIsRetried() async throws {
         let adapter = FakeAdapter()
         adapter.pages = [[message(1), message(2), message(3)]]
@@ -1214,8 +1230,11 @@ private class FakeAdapter: ChatAdapter {
         return id
     }
 
+    private(set) var readPositionChecks = 0
+
     func isAfterReadPosition(_ message: ChatMessage) -> Bool {
-        (Int(message.id) ?? 0) > readUpTo
+        readPositionChecks += 1
+        return (Int(message.id) ?? 0) > readUpTo
     }
 
     func markRead(upTo message: ChatMessage) -> (@MainActor () async throws -> Void)? {
