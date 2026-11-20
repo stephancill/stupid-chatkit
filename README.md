@@ -114,6 +114,8 @@ ChatKit.openAppLink = { url, base in MyRouter.open(url) }
 // Draw links as something richer in every chat, such as the post a link points at; call
 // ChatKit.linksDidResolve() when one you started loading arrives.
 ChatKit.resolveLink = { url in MyPosts.embed(for: url) }
+// Open a post's photos and videos (`.post` embeds) in your own full-screen viewer instead of the kit's.
+ChatKit.openPostMedia = { post, index in MyMediaViewer.present(post, at: index) }
 // Where history is kept; the default is in Application Support. Share one with an extension through an App Group.
 ChatKit.store = try ChatStore(url: myGroupContainer.appending(path: "chat-store.sqlite"), darwinNotificationName: "my.app.chatStore")
 ```

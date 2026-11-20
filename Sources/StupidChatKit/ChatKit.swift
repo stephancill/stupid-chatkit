@@ -17,6 +17,9 @@ public enum ChatKit {
     /// link in its text (added after its embeds). Return nil when there is nothing, or nothing yet: start loading it
     /// then, and call `linksDidResolve()` once it has loaded. Asked often, so answer from memory.
     public static var resolveLink: ((URL) -> ChatEmbed?)?
+    /// Opens a post's photos and videos (`.post` embeds) in the app's own full-screen viewer, at the one tapped by its
+    /// index in `media`. Unset (the default), they open in the chat's image viewer and video player like any other.
+    public static var openPostMedia: ((ChatPost, Int) -> Void)?
     /// Where every chat's history is kept. The default is in Application Support; an app whose notification
     /// extension writes messages too sets one in its App Group container before any chat is made.
     public static var store: ChatStore = {

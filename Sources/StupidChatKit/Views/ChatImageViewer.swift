@@ -74,7 +74,7 @@ final class ChatImageViewerController: UIViewController, UIScrollViewDelegate, U
         view.addSubview(spinner)
 
         configure(closeButton, systemImage: "xmark", label: "Close", action: #selector(close))
-        configure(saveButton, systemImage: "square.and.arrow.down", label: "Save to Photos", action: #selector(save))
+        configure(saveButton, systemImage: "square.and.arrow.down", label: Self.savesAsFile ? "Save to Downloads" : "Save to Photos", action: #selector(save))
         NSLayoutConstraint.activate([
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
@@ -225,17 +225,32 @@ final class ChatImageViewerController: UIViewController, UIScrollViewDelegate, U
 
     // MARK: Save
 
+    /// On a Mac an image is saved into Downloads, as Mac apps save, rather than into Photos.
+    private static var savesAsFile: Bool {
+        ProcessInfo.processInfo.isiOSAppOnMac
+    }
+
     /// Saves the original bytes, so GIFs and the full resolution survive, rather than the decoded image.
     @objc private func save() {
         setSaving(true)
         Task { [weak self, url] in
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if Self.savesAsFile {
+                    let file = FileManager.default.temporaryDirectory.appending(path: response.suggestedFilename ?? "image.jpg")
+                    try data.write(to: file, options: .atomic)
+                    guard let self else { return }
+                    _ = try await ChatDownloads.save(file, from: self)
+                    setSaving(false, saved: true)
+                    return
+                }
                 guard await PHPhotoLibrary.requestAuthorization(for: .addOnly) == .authorized else {
                     throw ChatImageSaveError.denied
                 }
                 try await Self.addToPhotos(data)
                 self?.setSaving(false, saved: true)
+            } catch is CancellationError {
+                self?.setSaving(false)
             } catch {
                 self?.setSaving(false)
                 self?.showSaveError(error)
@@ -255,7 +270,7 @@ final class ChatImageViewerController: UIViewController, UIScrollViewDelegate, U
         saveButton.isEnabled = !saving && !saved
         if saved {
             saveButton.configuration?.image = UIImage(systemName: "checkmark")
-            saveButton.accessibilityLabel = "Saved to Photos"
+            saveButton.accessibilityLabel = "Saved"
         }
     }
 

@@ -237,7 +237,9 @@ enum ChatVideoPlayer {
         presenter.present(controller, animated: true)
         Task { [weak controller] in
             do {
-                let file = try await ChatMediaFiles.shared.file(for: url, filename: url.pathExtension.isEmpty ? "video.mp4" : nil)
+                // An HLS playlist streams: a downloaded copy can't reach the segments it lists.
+                let file = url.pathExtension.lowercased() == "m3u8"
+                    ? url : try await ChatMediaFiles.shared.file(for: url, filename: url.pathExtension.isEmpty ? "video.mp4" : nil)
                 guard let controller, controller.presentingViewController != nil else { return }
                 spinner.removeFromSuperview()
                 // Like the story viewer: the silent switch doesn't mute a video the user chose to play.

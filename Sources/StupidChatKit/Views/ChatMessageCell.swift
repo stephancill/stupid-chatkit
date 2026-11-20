@@ -1450,10 +1450,25 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
 
     /// A link preview's media across the card, paged through in place when there are several. Its height follows
     /// the first item, between 4:3 portrait and 2:1 landscape.
-    private func mediaPager(_ media: [ChatEmbed], index: Int) -> UIView? {
+    private func mediaPager(_ media: [ChatEmbed], index: Int, post: ChatPost? = nil) -> UIView? {
         guard let first = media.first else { return nil }
         let ratio = CGFloat(min(max(Self.aspectRatio(of: first) ?? 16 / 9, 0.75), 2))
-        return ChatMediaPager(pages: media.map { tile(for: $0, index: index) }, aspectRatio: ratio)
+        let pages = media.enumerated().map { item, embed in
+            let tile = tile(for: embed, index: index)
+            if let post {
+                openInAppViewer(tile, post: post, item: item)
+            }
+            return tile
+        }
+        return ChatMediaPager(pages: pages, aspectRatio: ratio)
+    }
+
+    /// A post's photo or video opens in the app's viewer (`ChatKit.openPostMedia`) in place of the chat's own.
+    private func openInAppViewer(_ view: UIView, post: ChatPost, item: Int) {
+        guard let open = ChatKit.openPostMedia else { return }
+        view.gestureRecognizers?.forEach(view.removeGestureRecognizer)
+        view.isUserInteractionEnabled = true
+        view.addGestureRecognizer(ChatActionTapGesture { open(post, item) })
     }
 
     private static func aspectRatio(of embed: ChatEmbed) -> Double? {
@@ -1500,7 +1515,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
             text.accessibilityHint = isExpanded ? "Shows less" : "Shows the whole post"
             rows.append(text)
         }
-        if let media = mediaPager(post.media, index: index) {
+        if let media = mediaPager(post.media, index: index, post: post) {
             rows.append(media)
         }
         if let quoted = post.quoted {
@@ -1567,6 +1582,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         let text = postText(post.text.isEmpty ? Self.mediaSummary(post.media) : post.text, lines: 4, inset: inset)
         if let first = post.media.first {
             let thumbnail = makeView(for: first, index: index)
+            openInAppViewer(thumbnail, post: post, item: 0)
             thumbnail.constraints.filter { $0.firstItem === thumbnail && [.width, .height].contains($0.firstAttribute) }.forEach { $0.isActive = false }
             thumbnail.layer.cornerRadius = 6
             thumbnail.clipsToBounds = true
