@@ -818,6 +818,12 @@ public class ChatViewModel: ObservableObject {
     /// nothing.
     public var latestMessageId: String?
 
+    /// The chat's Chats row, rebuilt from the network, names a different latest message: an open chat that doesn't
+    /// hold it loads the newest messages.
+    func rowDidChange(latestMessageId: String) {
+        self.latestMessageId = latestMessageId
+    }
+
     /// Whether the stored messages are the chat's newest (`ChatStore.isCurrent`).
     public var isCurrent: Bool {
         false
@@ -1492,9 +1498,34 @@ public class ChatViewModel: ObservableObject {
 
     // MARK: Display
 
+    /// Whether the chat reports its row yet. A chat that loads from a network reports only once it has connected:
+    /// before then it shows stored messages, whose latest may be older than the row's and whose unread count goes by
+    /// the read position as last stored.
+    var reportsSummary = true
+    private var summaryHolds = 0
+    private var summaryIsPending = false
+
+    /// Reports the row once for changes made together (new messages, then their unread count), rather than once
+    /// with each.
+    func holdSummary() {
+        summaryHolds += 1
+    }
+
+    func releaseSummary() {
+        summaryHolds -= 1
+        if summaryHolds == 0, summaryIsPending {
+            summaryIsPending = false
+            reportSummary()
+        }
+    }
+
     /// An older window doesn't reach the newest message, so it has nothing to report about the latest one.
-    private func reportSummary() {
-        guard let summaryDidChange else { return }
+    func reportSummary() {
+        guard let summaryDidChange, reportsSummary else { return }
+        guard summaryHolds == 0 else {
+            summaryIsPending = true
+            return
+        }
         let latest = hasLaterMessages ? nil : messages.last { $0.isUserMessage && !$0.isDeleted }
         summaryDidChange(latest, latest.map(summaryBody), unreadCount, tracksUnseenReactions ? unseenReactionMessageIds.count : nil)
     }

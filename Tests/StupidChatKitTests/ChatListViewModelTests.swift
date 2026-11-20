@@ -255,6 +255,72 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertEqual(list.chats.first?.unreadCount, 2, "a row with a newer message is the network's")
     }
 
+    /// Rows from before the app was in the background (or from the cache at launch) may be behind: a chat opened from
+    /// one, such as from a notification, mustn't take its latest message as the network's and skip loading.
+    func testAChatOpenedFromAStaleRowDoesntTakeItsLatestMessage() async throws {
+        var listed = row("t", .telegram, minutesAgo: 1)
+        listed.latestMessageId = "5"
+        let provider = FakeProvider(network: .telegram, page: .init(chats: [listed], archived: []))
+        let store = try ChatStore(url: caches.appending(path: "store.sqlite"))
+        let list = ChatListViewModel(sources: { [ChatListSource(provider: provider, accountId: "telegram", label: "Telegram")] }, caches: caches, store: { store })
+        XCTAssertNil(list.follow(chat(), chatId: "telegram|t").latestMessageId, "no load yet")
+        await list.load()
+        XCTAssertEqual(list.follow(chat(), chatId: "telegram|t").latestMessageId, "5")
+
+        list.appDidEnterBackground()
+        XCTAssertNil(list.follow(chat(), chatId: "telegram|t").latestMessageId, "the row is from before the background")
+        list.updateChats([listed], accountId: "telegram")
+        XCTAssertEqual(list.follow(chat(), chatId: "telegram|t").latestMessageId, "5", "the network rebuilt the row")
+
+        let relaunched = ChatListViewModel(sources: { [ChatListSource(provider: provider, accountId: "telegram", label: "Telegram")] }, caches: caches, store: { store })
+        XCTAssertEqual(relaunched.chats.map(\.id), ["telegram|t"])
+        XCTAssertNil(relaunched.follow(chat(), chatId: "telegram|t").latestMessageId, "cached rows may be behind")
+    }
+
+    func testAnOpenChatHearsWhenItsRebuiltRowNamesANewerMessage() async {
+        var listed = row("t", .telegram, minutesAgo: 1)
+        listed.latestMessageId = "5"
+        let provider = FakeProvider(network: .telegram, page: .init(chats: [listed], archived: []))
+        let list = makeList([(provider, "telegram")])
+        await list.load()
+        let open = RowWatchingChat()
+        _ = list.follow(open, chatId: "telegram|t")
+
+        list.updateChats([listed], accountId: "telegram")
+        await list.load()
+        XCTAssertEqual(open.rowLatest, [], "the same latest message")
+
+        listed.latestMessageId = "6"
+        list.updateChats([listed], accountId: "telegram")
+        XCTAssertEqual(open.rowLatest, ["6"])
+        listed.latestMessageId = "7"
+        provider.page = .init(chats: [listed], archived: [])
+        await list.load()
+        XCTAssertEqual(open.rowLatest, ["6", "7"])
+    }
+
+    func testStaleRowsDontLoadAhead() async {
+        var listed = row("t", .telegram, minutesAgo: 1)
+        listed.latestMessageId = "5"
+        let list = makeList([(FakeProvider(network: .telegram, page: .init(chats: [listed], archived: [])), "telegram")])
+        await list.load()
+        list.appDidEnterBackground()
+        var asked: [String] = []
+        list.prefetcher = { chat in
+            asked.append(chat.id)
+            return nil
+        }
+        await list.loadAhead()
+        XCTAssertEqual(asked, [], "asking whether it's stored would count the stored chat as current again")
+        list.updateChats([listed], accountId: "telegram")
+        await list.loadAhead()
+        XCTAssertEqual(asked, ["telegram|t"])
+    }
+
+    private func chat() -> ChatViewModel {
+        ChatViewModel(network: .telegram, chatKey: "telegram|t", title: "t", subtitle: "", canReply: true, draftStore: ChatDraftStore(defaults: UserDefaults(suiteName: "ChatListViewModelTests-\(UUID().uuidString)")!))
+    }
+
     private func makeList(_ providers: [(FakeProvider, String?)]) -> ChatListViewModel {
         ChatListViewModel(sources: {
             providers.map { ChatListSource(provider: $0.0, accountId: $0.1, label: $0.0.chatNetwork.rawValue) }
@@ -272,6 +338,20 @@ final class ChatListViewModelTests: XCTestCase {
             unreadCount: 0,
             destination: destination ?? .spotify(chatId: id),
         )
+    }
+}
+
+@MainActor
+private final class RowWatchingChat: ChatViewModel {
+    private(set) var rowLatest: [String] = []
+
+    init() {
+        super.init(network: .telegram, chatKey: "telegram|t", title: "t", subtitle: "", canReply: true, draftStore: ChatDraftStore(defaults: UserDefaults(suiteName: "RowWatchingChat-\(UUID().uuidString)")!))
+    }
+
+    override func rowDidChange(latestMessageId: String) {
+        super.rowDidChange(latestMessageId: latestMessageId)
+        rowLatest.append(latestMessageId)
     }
 }
 

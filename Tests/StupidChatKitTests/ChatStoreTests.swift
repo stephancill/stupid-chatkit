@@ -43,6 +43,8 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertFalse(try store.isCurrent(chatKey: chat, latestMessageId: "10"))
         XCTAssertTrue(try store.isCurrent(chatKey: chat, latestMessageId: "9"), "the newest chunk holds the latest message")
         XCTAssertTrue(try store.isCurrent(chatKey: chat, latestMessageId: nil), "and is stamped with the epoch")
+        store.raiseEpochs()
+        XCTAssertFalse(try store.isCurrent(chatKey: chat, latestMessageId: nil), "raising every account's epoch raises this one's")
     }
 
     func testANewestPageThatDoesntOverlapStartsANewChunkAboveAGap() throws {

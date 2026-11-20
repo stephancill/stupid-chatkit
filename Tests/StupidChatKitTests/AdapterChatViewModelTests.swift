@@ -29,6 +29,43 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    /// Stored messages may be behind the row (an older latest message, a read position from before), so the chat
+    /// reports its row only once connected, and once per change rather than the new messages with the old count.
+    func testTheRowHearsOnlyFromAConnectedChatOncePerChange() async {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2)]]
+        let first = makeChat(adapter)
+        await first.connect()
+        first.disconnect()
+
+        let reopened = FakeAdapter()
+        reopened.pages = [[message(2), message(3), message(4)]]
+        let chat = makeChat(reopened)
+        var reports: [String] = []
+        chat.summaryDidChange = { latest, _, unread, _ in reports.append("\(latest?.id ?? "-"):\(unread)") }
+        XCTAssertEqual(chat.messages.map(\.id), ["1", "2"], "stored messages show")
+        XCTAssertEqual(reports, [], "but aren't reported")
+        await chat.connect()
+        XCTAssertEqual(reports, ["4:4"], "one report, with the count for the newest messages")
+        chat.disconnect()
+    }
+
+    func testAnOpenChatFetchesWhenItsRowNamesAMessageItDoesntHold() async {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2)], [message(2), message(3)]]
+        let chat = makeChat(adapter)
+        await chat.connect()
+        XCTAssertEqual(adapter.fetches, [.newest])
+        chat.rowDidChange(latestMessageId: "2")
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(adapter.fetches, [.newest], "it holds that one")
+        chat.rowDidChange(latestMessageId: "3")
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(adapter.fetches, [.newest, .newest])
+        XCTAssertEqual(chat.messages.map(\.id), ["1", "2", "3"])
+        chat.disconnect()
+    }
+
     func testAFailedLoadDisconnectsWithTheReason() async {
         let adapter = FakeAdapter()
         adapter.error = URLError(.notConnectedToInternet)

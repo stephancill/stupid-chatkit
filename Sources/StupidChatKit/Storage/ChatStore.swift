@@ -72,6 +72,8 @@ public final class ChatStore: @unchecked Sendable {
     private let lock = NSLock()
     private let launchId = UUID().uuidString
     private var epochs: [String: Int] = [:]
+    /// Raised for every account at once (`raiseEpochs()`).
+    private var generation = 0
     /// Accounts whose every chat the app keeps current from a live connection (`setFollowed`).
     private var followed: Set<String> = []
     @MainActor private var observers: [String: [UUID: @MainActor () -> Void]] = [:]
@@ -154,13 +156,22 @@ public final class ChatStore: @unchecked Sendable {
 
     /// The account's current sync epoch.
     public func epoch(accountId: String) -> String {
-        locked { "\(launchId):\(epochs[accountId, default: 0])" }
+        locked { epochString(accountId: accountId) }
     }
 
     /// The account's live connection may have missed events: newest chunks stop counting as current until a fetch
     /// or a newer list row shows they are.
     public func raiseEpoch(accountId: String) {
         locked { epochs[accountId, default: 0] += 1 }
+    }
+
+    /// Every account may have missed events, such as while the app was in the background.
+    public func raiseEpochs() {
+        locked { generation += 1 }
+    }
+
+    private func epochString(accountId: String) -> String {
+        "\(launchId).\(generation):\(epochs[accountId, default: 0])"
     }
 
     /// The app's own sync writes the account's live updates for every chat into the store, open or not, from now
@@ -304,7 +315,7 @@ public final class ChatStore: @unchecked Sendable {
     public func isCurrent(chatKey: String, latestMessageId: String?) throws -> Bool {
         try locked {
             guard let chunk = try newest(chat: chatKey), chunk.reachesNewest else { return false }
-            let epoch = "\(launchId):\(epochs[Self.accountId(of: chatKey), default: 0])"
+            let epoch = epochString(accountId: Self.accountId(of: chatKey))
             if let latestMessageId {
                 guard let stored = try database.first(
                     "SELECT chunk FROM record WHERE chat = ? AND id = ? AND provisional = 0", [.text(chatKey), .text(latestMessageId)], map: { $0.int(0) },
@@ -577,7 +588,7 @@ public final class ChatStore: @unchecked Sendable {
     }
 
     private func currentEpoch(chat: String) -> String {
-        "\(launchId):\(epochs[Self.accountId(of: chat), default: 0])"
+        epochString(accountId: Self.accountId(of: chat))
     }
 
     private static let chunkColumns = "id, has_earlier, earlier, reaches_newest, later, epoch"

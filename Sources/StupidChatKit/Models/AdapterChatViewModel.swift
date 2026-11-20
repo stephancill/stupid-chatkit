@@ -534,6 +534,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             draftStore: draftStore,
         )
         tracksUnseenReactions = adapter is any ChatUnseenReactions
+        reportsSummary = false
         showsReadReceipts = adapter is any ChatReadReceipts
         adapter.onChange = { [weak self] in self?.adapterDidChange() }
         if let live = adapter as? any ChatLiveUpdating {
@@ -584,6 +585,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         }
         errorMessage = nil
         try? store.markOpened(chatKey: chatKey)
+        let rowLatest = latestMessageId
         do {
             if try !store.isCurrent(chatKey: chatKey, latestMessageId: latestMessageId) {
                 try await fetchNewest()
@@ -598,6 +600,14 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             placeUnreadDivider()
             saveState()
             isOpen = true
+            if !reportsSummary {
+                reportsSummary = true
+                reportSummary()
+            }
+            // The row may have named a newer message while the chat connected.
+            if latestMessageId != rowLatest, try !store.isCurrent(chatKey: chatKey, latestMessageId: latestMessageId) {
+                Task { await poll() }
+            }
             updateAbilities()
             state = .connected
             if let seen = readOnConnect {
@@ -644,6 +654,12 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
 
     override public var isCurrent: Bool {
         (try? store.isCurrent(chatKey: chatKey, latestMessageId: latestMessageId)) ?? false
+    }
+
+    override func rowDidChange(latestMessageId: String) {
+        super.rowDidChange(latestMessageId: latestMessageId)
+        guard isOpen, !isCurrent else { return }
+        Task { await poll() }
     }
 
     private func fetchNewest() async throws {
@@ -1295,6 +1311,8 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     }
 
     private func adapterDidChange() {
+        holdSummary()
+        defer { releaseSummary() }
         updateAbilities()
         let info = adapter.info
         if title != info.title {

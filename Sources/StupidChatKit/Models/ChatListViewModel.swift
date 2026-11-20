@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// One conversation in the Chats list. `Destination` is the app's id for a chat across its networks, which it
 /// turns into the chat when the row is opened.
@@ -207,6 +208,21 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     /// the first load can finish after the opened chat was read.
     private var followedRows: [String: FollowedRow] = [:]
     private var followedUpdateCount = 0
+    /// The open chats, told when a rebuilt row names a latest message they may not hold.
+    private var followedChats: [String: WeakChat] = [:]
+
+    private struct WeakChat {
+        weak var viewModel: ChatViewModel?
+    }
+
+    /// Rows that may be behind their networks: listed from the cache at launch, or from before the app was last in
+    /// the background, where live connections stop. Until the network rebuilds one, a chat opened from it (such as
+    /// from a notification) doesn't take its latest message as the network's, which would let the chat skip loading
+    /// the messages the notification is about.
+    private(set) var staleRows: Set<String> = []
+    private var staleCount = 0
+    private let store: () -> ChatStore
+    private nonisolated(unsafe) var backgroundObserver: (any NSObjectProtocol)?
 
     private struct FollowedRow {
         let update: Int
@@ -272,8 +288,13 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     private let cacheURL: URL
     private let archiveCacheURL: URL
 
-    public init(sources: @escaping () -> [ChatListSource<Destination>], caches: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]) {
+    public init(
+        sources: @escaping () -> [ChatListSource<Destination>],
+        caches: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0],
+        store: @escaping () -> ChatStore = { ChatKit.store },
+    ) {
         self.sources = sources
+        self.store = store
         cacheURL = caches.appending(path: "chat-list.json")
         archiveCacheURL = caches.appending(path: "chat-list-archived.json")
         if let data = try? Data(contentsOf: cacheURL), let cached = try? JSONDecoder().decode([Summary].self, from: data) {
@@ -283,6 +304,22 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         if let data = try? Data(contentsOf: archiveCacheURL), let cached = try? JSONDecoder().decode([Summary].self, from: data) {
             archivedChats = cached
         }
+        staleRows = Set((chats + archivedChats).map(\.id))
+        backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.appDidEnterBackground() }
+        }
+    }
+
+    deinit {
+        backgroundObserver.map(NotificationCenter.default.removeObserver)
+    }
+
+    /// Live connections stop in the background, so every account may miss messages from here: stored chats stop
+    /// counting as current and the rows as the networks' latest.
+    func appDidEnterBackground() {
+        staleRows = Set((chats + archivedChats).map(\.id))
+        staleCount += 1
+        store().raiseEpochs()
     }
 
     /// The chat a notification or link names: the listed one, else what its provider finds or stands in for.
@@ -305,6 +342,7 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         isLoading = true
         defer { isLoading = false }
         let startedAfter = followedUpdateCount
+        let staleCountAtStart = staleCount
         let sources = sources()
         let providers = sources.map(\.provider)
         let results = await withTaskGroup(of: (Int, Result<ChatListPage<Destination>, Error>).self) { group in
@@ -329,14 +367,19 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
             }
             return ChatConnectionStatus(id: id, network: network, label: label, error: error?.localizedDescription)
         }
+        var rebuilt: [Summary] = []
         for (source, result) in zip(sources, results) {
             let network = source.provider.chatNetwork
             let sourceId = source.accountId ?? network.rawValue
             switch result {
             case let .success(page):
-                merged += page.chats.map { $0.scoped(to: source.accountId) }
+                let pageChats = page.chats.map { $0.scoped(to: source.accountId) }
+                merged += pageChats
+                rebuilt += pageChats
                 if let pageArchived = page.archived {
-                    archived += pageArchived.map { $0.scoped(to: source.accountId) }
+                    let pageArchived = pageArchived.map { $0.scoped(to: source.accountId) }
+                    archived += pageArchived
+                    rebuilt += pageArchived
                 } else {
                     archived += archivedChats.filter(source.owns)
                 }
@@ -362,6 +405,22 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         followedRows = followedRows.filter { $0.value.update > startedAfter }
         setChats(merged.map(keepingFollowedState))
         setArchivedChats(archived.map(keepingFollowedState))
+        if staleCount == staleCountAtStart {
+            rowsRebuilt(rebuilt)
+        }
+    }
+
+    /// Rows the network just built: they're its latest, and each open chat whose row now names a different latest
+    /// message fetches it unless it holds it.
+    private func rowsRebuilt(_ rows: [Summary]) {
+        staleRows.subtract(rows.map(\.id))
+        followedChats = followedChats.filter { $0.value.viewModel != nil }
+        for row in rows {
+            guard let viewModel = followedChats[row.id]?.viewModel, let latest = row.latestMessageId,
+                  latest != viewModel.latestMessageId
+            else { continue }
+            viewModel.rowDidChange(latestMessageId: latest)
+        }
     }
 
     /// The row as its open chat last reported it, for updates the finishing load doesn't include.
@@ -373,7 +432,10 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     /// Keeps the chat's row current while it is open, so returning to the list shows its latest message and
     /// read state without waiting for the reload.
     public func follow<ViewModel: ChatViewModel>(_ viewModel: ViewModel, chatId: String) -> ViewModel {
-        viewModel.latestMessageId = viewModel.latestMessageId ?? (chats + archivedChats).first { $0.id == chatId }?.latestMessageId
+        if !staleRows.contains(chatId) {
+            viewModel.latestMessageId = viewModel.latestMessageId ?? (chats + archivedChats).first { $0.id == chatId }?.latestMessageId
+        }
+        followedChats[chatId] = WeakChat(viewModel: viewModel)
         if let chat = chats.first(where: { $0.id == chatId }) {
             viewModel.isMuted = chat.isMuted
             viewModel.isArchived = false
@@ -461,6 +523,7 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     /// their account.
     public func replaceChats(where isReplaced: (Summary) -> Bool, with summaries: [Summary]) {
         setChats(chats.filter { !isReplaced($0) } + summaries.map(keepingFollowedReadState))
+        rowsRebuilt(summaries)
     }
 
     /// A rebuilt row of an open chat whose latest message the chat has already shown keeps the chat's counts: the
@@ -522,7 +585,8 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         var due: [(key: String, viewModel: ChatViewModel)] = []
         for chat in Self.prefetchOrder(chats) {
             let key = "\(chat.id)|\(chat.latestMessageId ?? "")|\(chat.timestamp?.timeIntervalSince1970 ?? 0)|\(chat.unreadCount)"
-            guard !prefetched.contains(key) else { continue }
+            // A stale row's latest message would count the stored chat as current again.
+            guard !prefetched.contains(key), !staleRows.contains(chat.id) else { continue }
             if let last = prefetchedAt[chat.id], Date().timeIntervalSince(last) < Self.prefetchInterval {
                 retryPrefetch(after: Self.prefetchInterval - Date().timeIntervalSince(last))
                 continue
