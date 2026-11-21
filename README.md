@@ -37,6 +37,8 @@ targets: [
 
 `stupid-app` builds apps with package dependencies from 0.0.27.
 
+Chats that take attachments show the user's recent photos and offer the camera, so the app's `Info.plist` needs `NSPhotoLibraryUsageDescription` and `NSCameraUsageDescription`; without them iOS ends the app when the attachment sheet opens. Voice messages need `NSMicrophoneUsageDescription`.
+
 ## Use
 
 A chat with a bot that repeats what you send:

@@ -27,7 +27,8 @@ struct ChatUIKitView: UIViewControllerRepresentable {
 }
 
 final class ChatViewController: UIViewController, UICollectionViewDelegate, UITextViewDelegate,
-    PHPickerViewControllerDelegate, UIDocumentPickerDelegate, UIDropInteractionDelegate, UICollectionViewDropDelegate
+    PHPickerViewControllerDelegate, UIDocumentPickerDelegate, UIDropInteractionDelegate, UICollectionViewDropDelegate,
+    UIImagePickerControllerDelegate, UINavigationControllerDelegate
 {
     /// One section per calendar day, headed by its date (`ChatDateHeaderView`).
     private enum Section: Hashable {
@@ -410,8 +411,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         attachButton.setImage(UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)), for: .normal)
         attachButton.tintColor = .label
         attachButton.accessibilityLabel = "Add Attachment"
-        attachButton.showsMenuAsPrimaryAction = true
-        attachButton.menu = attachMenu()
+        attachButton.addAction(UIAction { [weak self] _ in self?.presentMediaPicker() }, for: .primaryActionTriggered)
         let attachGlass = ChatGlass.make(cornerRadius: 22)
         attachGlass.contentView.addSubview(attachButton)
         attachButton.pinToEdges(of: attachGlass.contentView)
@@ -1578,11 +1578,39 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
 
     // MARK: - Attachments
 
-    private func attachMenu() -> UIMenu {
-        UIMenu(children: [
-            UIAction(title: "Photo Library", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in self?.presentPhotoPicker() },
-            UIAction(title: "Files", image: UIImage(systemName: "folder")) { [weak self] _ in self?.presentDocumentPicker() },
-        ])
+    /// Recent photos to pick from, with the camera, the whole library and Files.
+    private func presentMediaPicker() {
+        let room = ChatViewModel.maxAttachments - attachments.count
+        let picker = ChatMediaPicker(limit: room) { [weak self] choice in
+            guard let self else { return }
+            switch choice {
+            case let .assets(assets):
+                Task { @MainActor [weak self] in
+                    var loaded: [ChatAttachment] = []
+                    for asset in assets {
+                        if let attachment = await ChatMediaPicker.attachment(for: asset) { loaded.append(attachment) }
+                    }
+                    self?.stage(loaded)
+                }
+            case .library: presentPhotoPicker()
+            case .files: presentDocumentPicker()
+            case .camera: presentCamera()
+            }
+        }
+        present(picker.wrapped(), animated: true)
+    }
+
+    private func presentCamera() {
+        let camera = UIImagePickerController()
+        camera.sourceType = .camera
+        camera.delegate = self
+        present(camera, animated: true)
+    }
+
+    func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+        picker.dismiss(animated: true)
+        guard let image = info[.originalImage] as? UIImage, let data = ChatImageEncoding.jpeg(from: image) else { return }
+        stage([ChatAttachment(data: data, mimeType: "image/jpeg", filename: "photo.jpg", isImage: true)])
     }
 
     // MARK: - Voice messages
