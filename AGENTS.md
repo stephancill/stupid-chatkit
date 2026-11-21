@@ -35,6 +35,6 @@ StupidChatKit is the chat framework from stupid social (`../stupid-social`, `htt
 ## Releasing
 
 1. Update `README.md` and `docs/DESIGN.md` for the change, and commit with a conventional commit message (`feat:`, `fix:`, …).
-2. Pick the version: a patch bump unless the release breaks the public API (see Rules). Tag and push: `git tag -a X.Y.Z -m "StupidChatKit X.Y.Z"`, `git push origin main X.Y.Z`. Tags are plain semantic versions (no `v`), which SwiftPM resolves.
-3. Create the GitHub release with notes: `gh release create X.Y.Z --notes "…"`.
+2. Pick the version: a patch bump unless the release breaks the public API (see Rules). Tags are plain semantic versions (no `v`), which SwiftPM resolves.
+3. Once the change is on `main`, run the Release workflow (`.github/workflows/release.yml`: Actions → Release → Run workflow, or `gh workflow run release.yml -f version=X.Y.Z -f notes="…"`). It tags the head of `main` (or the `commit` input) and creates the GitHub release with the notes, so it works where only a branch can be pushed, such as a cloud agent session. By hand instead: `git tag -a X.Y.Z -m "StupidChatKit X.Y.Z"`, `git push origin main X.Y.Z`, `gh release create X.Y.Z --notes "…"`.
 4. Bump the app: in stupid social, `swift package update stupid-chatkit` (raise `from:` in `Package.swift` when it needs the new API), build, and commit `Package.resolved`.

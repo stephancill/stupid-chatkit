@@ -1,0 +1,53 @@
+# Tags main (or the commit given) with a version and creates its GitHub release, for releasing without
+# pushing a tag by hand: Actions → Release → Run workflow, or `gh workflow run release.yml -f version=X.Y.Z -f notes=…`.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to tag, X.Y.Z (no v)
+        required: true
+      notes:
+        description: Release notes
+        required: true
+      commit:
+        description: "Commit to tag (default: the head of main)"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Check the version and commit
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Version must be X.Y.Z, got '$VERSION'"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then echo "::error::$VERSION is already tagged"; exit 1; fi
+          target=$(git rev-parse --verify "${COMMIT:-HEAD}^{commit}")
+          git merge-base --is-ancestor "$target" HEAD || { echo "::error::$target is not on main"; exit 1; }
+          echo "TARGET=$target" >> "$GITHUB_ENV"
+
+      - name: Tag and create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "StupidChatKit $VERSION" "$TARGET"
+          git push origin "refs/tags/$VERSION"
+          gh release create "$VERSION" --verify-tag --title "$VERSION" --notes "$NOTES"
