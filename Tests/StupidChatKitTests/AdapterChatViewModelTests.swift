@@ -1077,6 +1077,27 @@ final class AdapterChatViewModelTests: XCTestCase {
         XCTAssertFalse(chat.canArchive)
     }
 
+    func testATranscriptionThatFailsIsReportedAndKeepsNoTranscript() async {
+        var events: [ChatEvent] = []
+        let onEvent = ChatKit.onEvent
+        ChatKit.onEvent = { events.append($0) }
+        defer { ChatKit.onEvent = onEvent }
+        let chat = makeChat(FakeAdapter())
+        do {
+            _ = try await chat.transcribeVoice("voice", ofMessage: "1", language: nil)
+            XCTFail("the fake adapter has no audio")
+        } catch {
+            XCTAssertEqual(error as? ChatTranscriptionError, .audioUnavailable)
+        }
+        XCTAssertNil(chat.transcript(ofMessage: "1"))
+        guard case let .voiceTranscribed(network, isLanguageChosen, error)? = events.last else {
+            return XCTFail("no event")
+        }
+        XCTAssertEqual(network, FakeAdapter().network)
+        XCTAssertFalse(isLanguageChosen)
+        XCTAssertEqual(error as? ChatTranscriptionError, .audioUnavailable)
+    }
+
     private func makeStore() throws -> ChatStore {
         if let store {
             return store

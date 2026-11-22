@@ -1279,14 +1279,24 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     }
 
     override public func transcribeVoice(_ previewId: String, ofMessage messageId: String, language: Locale?) async throws -> ChatTranscript {
-        guard #available(iOS 26, *) else { throw ChatTranscriptionError.unavailable }
+        do {
+            let transcript = try await transcribe(previewId, language: language)
+            try? store.setTranscript(transcript, messageId: messageId, chatKey: chatKey)
+            _ = self.transcript(ofMessage: messageId)
+            transcripts?[messageId] = transcript
+            ChatKit.onEvent(.voiceTranscribed(network: network, isLanguageChosen: language != nil, error: nil))
+            return transcript
+        } catch {
+            ChatKit.onEvent(.voiceTranscribed(network: network, isLanguageChosen: language != nil, error: error))
+            throw error
+        }
+    }
+
+    private func transcribe(_ previewId: String, language: Locale?) async throws -> ChatTranscript {
         guard let url = await audioPreviewURL(for: previewId) else { throw ChatTranscriptionError.audioUnavailable }
+        guard #available(iOS 26, *) else { throw ChatTranscriptionError.unavailable }
         let languages = language.map { [$0] } ?? ChatKit.transcriptionLanguages()
-        let transcript = try await ChatVoiceTranscriber.transcribe(fileURL: url, languages: languages)
-        try? store.setTranscript(transcript, messageId: messageId, chatKey: chatKey)
-        _ = self.transcript(ofMessage: messageId)
-        transcripts?[messageId] = transcript
-        return transcript
+        return try await ChatVoiceTranscriber.transcribe(fileURL: url, languages: languages)
     }
 
     // MARK: Links

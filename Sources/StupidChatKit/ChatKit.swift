@@ -64,6 +64,9 @@ public enum ChatEvent {
     case messageDeleted(network: ChatNetwork, error: (any Error)?)
     case messageForwarded(network: ChatNetwork, from: ChatNetwork, isNative: Bool, error: (any Error)?)
     case messageButtonPressed(network: ChatNetwork, error: (any Error)?)
+    /// A voice message was transcribed, in a language the user chose (`isLanguageChosen`) or the best of theirs.
+    /// A `ChatTranscriptionError` says why there is no transcript.
+    case voiceTranscribed(network: ChatNetwork, isLanguageChosen: Bool, error: (any Error)?)
 }
 
 /// An error a `ChatListProvider` throws when its network isn't connected: when `isNotConnected`, the provider
