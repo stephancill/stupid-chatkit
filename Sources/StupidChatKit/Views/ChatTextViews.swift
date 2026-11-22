@@ -144,6 +144,17 @@ final class ChatComposerTextView: UITextView {
 
 /// A label whose `.chatLink` runs open on tap and whose `.chatMention` runs show the user. Taps elsewhere
 /// pass through, so long-press menus and swipe-to-reply on the bubble still work.
+/// A message's text, selectable with the pointer on a Mac so Command-C copies it. Right-clicks pass through to
+/// the list, which always lifts the message; the text view's own menu never shows.
+final class ChatSelectableTextView: UITextView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if let event, event.buttonMask.contains(.secondary) {
+            return nil
+        }
+        return super.hitTest(point, with: event)
+    }
+}
+
 final class ChatLinkLabel: UILabel {
     private enum Target {
         case link(URL)
@@ -155,11 +166,25 @@ final class ChatLinkLabel: UILabel {
     var openLink: (URL) -> Void = { _ in }
     var revealSpoilers: () -> Void = {}
     private lazy var linkTap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+    /// On a Mac, the text laid over the label invisibly so it can be selected with the pointer, as the focus
+    /// overlay does; the label still draws it. Links, mentions and spoilers stay on `linkTap`, which sees the
+    /// text view's clicks too.
+    private let selectableText: ChatSelectableTextView? = ProcessInfo.processInfo.isiOSAppOnMac ? ChatSelectableTextView() : nil
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         isUserInteractionEnabled = true
         addGestureRecognizer(linkTap)
+        if let selectableText {
+            selectableText.isEditable = false
+            selectableText.isScrollEnabled = false
+            selectableText.backgroundColor = .clear
+            selectableText.textContainerInset = .zero
+            selectableText.textContainer.lineFragmentPadding = 0
+            selectableText.linkTextAttributes = [:]
+            selectableText.isAccessibilityElement = false
+            addSubview(selectableText)
+        }
     }
 
     @available(*, unavailable)
@@ -194,7 +219,34 @@ final class ChatLinkLabel: UILabel {
         didSet {
             setNeedsLayout()
             accessibilityLabel = attributedText.flatMap(Self.spokenText)
+            selectableText?.attributedText = attributedText.map(Self.invisible)
+            // The selection takes the text's color, which shows on every bubble; the system blue didn't on the user's own.
+            selectableText?.tintColor = attributedText.flatMap { $0.length > 0 ? $0.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? UIColor : nil } ?? textColor
         }
+    }
+
+    func clearSelection() {
+        selectableText?.selectedRange = NSRange(location: 0, length: 0)
+    }
+
+    var isSelectionHidden: Bool {
+        get { selectableText?.isHidden ?? true }
+        set { selectableText?.isHidden = newValue }
+    }
+
+    /// The text in clear, with images of the same size in place of attachments (custom emoji).
+    static func invisible(_ text: NSAttributedString) -> NSAttributedString {
+        let clear = NSMutableAttributedString(attributedString: text)
+        let range = NSRange(location: 0, length: clear.length)
+        clear.addAttribute(.foregroundColor, value: UIColor.clear, range: range)
+        clear.enumerateAttribute(.attachment, in: range) { value, range, _ in
+            guard let attachment = value as? NSTextAttachment else { return }
+            let blank = NSTextAttachment()
+            blank.image = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).image { _ in }
+            blank.bounds = attachment.bounds
+            clear.addAttribute(.attachment, value: blank, range: range)
+        }
+        return clear
     }
 
     /// Hidden spoilers are read as "spoiler" rather than their text; `nil` when there are none.
@@ -213,6 +265,17 @@ final class ChatLinkLabel: UILabel {
         super.layoutSubviews()
         layoutQuoteBars()
         layoutSpoilers()
+        layoutSelectableText()
+    }
+
+    private func layoutSelectableText() {
+        guard let selectableText else { return }
+        let offset = attributedText.flatMap { text in
+            layout(in: text).map { storage, _, _, offset in withExtendedLifetime(storage) { offset } }
+        } ?? 0
+        selectableText.frame = CGRect(x: 0, y: offset, width: bounds.width, height: bounds.height - offset)
+        // Set after the frame: the container keeps the size it had, which cut off the last lines.
+        selectableText.textContainer.size = CGSize(width: bounds.width, height: .greatestFiniteMagnitude)
     }
 
     /// Dotted patches over hidden spoiler text, one per line it spans.

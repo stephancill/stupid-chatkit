@@ -98,8 +98,16 @@ final class ChatMessageFocusController: UIViewController, UITextViewDelegate {
     private var isClosing = false
 
     private static let gap: CGFloat = 8
+    /// The lifted bubble is a little larger than in the chat, growing away from its own side of the screen.
+    static let liftedScale: CGFloat = 1.05
+    /// Where the bubble settles once lifted: `liftedScale`, or as it is when it's too tall to fit.
+    private var liftedTransform = CGAffineTransform.identity
     /// The press shrinks the bubble to this, so the lift starts from it.
-    private static let pressedScale: CGFloat = 0.96
+    /// A long press shrinks the bubble before it lifts; a Mac's right-click doesn't, so it lifts at full size.
+    private static let pressedScale: CGFloat = ProcessInfo.processInfo.isiOSAppOnMac ? 1 : 0.96
+    /// The lift springs out of the finger on a touch screen, overshooting a little; on a Mac it settles without a
+    /// bounce, as the system's context menus do.
+    private static let liftDamping: CGFloat = ProcessInfo.processInfo.isiOSAppOnMac ? 1 : 0.78
 
     init(snapshot: ChatFocusSnapshot, sourceFrame: CGRect, currentSourceFrame: @escaping () -> CGRect?, isOwn: Bool, menu: ChatMessageMenu, openLink: @escaping (URL) -> Void, didLift: @escaping () -> Void, didClose: @escaping () -> Void) {
         self.snapshot = snapshot
@@ -149,7 +157,7 @@ final class ChatMessageFocusController: UIViewController, UITextViewDelegate {
         lifted.layer.shadowPath = UIBezierPath(roundedRect: image.frame, cornerRadius: snapshot.cornerRadius).cgPath
         if let text = snapshot.text {
             // Laid out as the bubble's label lays it out, but invisible: the image shows the text, this selects it.
-            textView.attributedText = Self.invisible(text)
+            textView.attributedText = ChatLinkLabel.invisible(text)
             textView.isEditable = false
             textView.isScrollEnabled = false
             textView.backgroundColor = .clear
@@ -187,9 +195,9 @@ final class ChatMessageFocusController: UIViewController, UITextViewDelegate {
         super.viewDidAppear(animated)
         didLift()
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        UIViewPropertyAnimator(duration: 0.5, dampingRatio: 0.78) { [self] in
+        UIViewPropertyAnimator(duration: 0.5, dampingRatio: Self.liftDamping) { [self] in
             blur.effect = UIBlurEffect(style: .systemUltraThinMaterial)
-            lifted.transform = .identity
+            lifted.transform = liftedTransform
             for panel in [reactions, actions].compactMap(\.self) {
                 panel.alpha = 1
                 panel.transform = .identity
@@ -210,12 +218,16 @@ final class ChatMessageFocusController: UIViewController, UITextViewDelegate {
         lifted.frame = CGRect(x: sourceFrame.minX, y: 0, width: sourceFrame.width, height: height)
         scrollView.contentSize = CGSize(width: view.bounds.width, height: height)
         let liftedY: CGFloat
-        if height <= bottom - top {
-            liftedY = min(max(sourceFrame.minY, top), bottom - height)
+        // What the larger bubble adds above and below it.
+        let growth = height * (Self.liftedScale - 1) / 2
+        if height + 2 * growth <= bottom - top {
+            liftedY = min(max(sourceFrame.minY, top + growth), bottom - growth - height)
             scrollView.contentInset = UIEdgeInsets(top: liftedY, left: 0, bottom: view.bounds.height - liftedY - height, right: 0)
             scrollView.contentOffset = CGPoint(x: 0, y: -liftedY)
-            reactions?.frame.origin.y = liftedY - Self.gap - (reactions?.frame.height ?? 0)
-            actions?.frame.origin.y = liftedY + height + Self.gap
+            reactions?.frame.origin.y = liftedY - growth - Self.gap - (reactions?.frame.height ?? 0)
+            actions?.frame.origin.y = liftedY + height + growth + Self.gap
+            let dx = (isOwn ? -1 : 1) * sourceFrame.width * (Self.liftedScale - 1) / 2
+            liftedTransform = CGAffineTransform(translationX: dx, y: 0).scaledBy(x: Self.liftedScale, y: Self.liftedScale)
         } else {
             scrollView.contentInset = UIEdgeInsets(top: top, left: 0, bottom: view.bounds.height - bottom, right: 0)
             scrollView.alwaysBounceVertical = true
@@ -255,10 +267,14 @@ final class ChatMessageFocusController: UIViewController, UITextViewDelegate {
         textView.selectedTextRange = nil
         view.endEditing(true)
         keyboardObserver.map(NotificationCenter.default.removeObserver)
-        let current = lifted.superview?.convert(lifted.frame, to: view) ?? .zero
+        // The bubble's frame without its lifted scale, which the transform below replaces.
+        let unscaled = CGRect(x: lifted.center.x - lifted.bounds.width / 2, y: lifted.center.y - lifted.bounds.height / 2, width: lifted.bounds.width, height: lifted.bounds.height)
+        let current = lifted.superview?.convert(unscaled, to: view) ?? .zero
         let target = currentSourceFrame()
         let animator = UIViewPropertyAnimator(duration: 0.4, dampingRatio: 0.9) { [self] in
             blur.effect = nil
+            // On a Mac removing the effect doesn't animate: the blur stayed until the end, then vanished.
+            blur.alpha = 0
             grid?.alpha = 0
             for (panel, isAbove) in [(reactions, true), (actions, false)] {
                 guard let panel else { continue }
@@ -290,20 +306,6 @@ final class ChatMessageFocusController: UIViewController, UITextViewDelegate {
     }
 
     /// The text clear, with custom emoji images blanked but kept at their size, so it lays out as shown and draws nothing.
-    private static func invisible(_ text: NSAttributedString) -> NSAttributedString {
-        let clear = NSMutableAttributedString(attributedString: text)
-        let range = NSRange(location: 0, length: clear.length)
-        clear.addAttribute(.foregroundColor, value: UIColor.clear, range: range)
-        clear.enumerateAttribute(.attachment, in: range) { value, range, _ in
-            guard let attachment = value as? NSTextAttachment else { return }
-            let blank = NSTextAttachment()
-            blank.image = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).image { _ in }
-            blank.bounds = attachment.bounds
-            clear.addAttribute(.attachment, value: blank, range: range)
-        }
-        return clear
-    }
-
     private func reactionsRow() -> UIView {
         let row = UIStackView(arrangedSubviews: menu.reactions.map { reaction in
             var configuration = UIButton.Configuration.plain()

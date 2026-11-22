@@ -43,6 +43,8 @@ Chat is one framework with an adapter per chat network (in stupid social: Apron,
 
 **Search on a Mac:** searching a chat shows a plain field under the bar instead of the system search field, whose presentation throws in an iPad app on macOS 27 (observed 2026-11-17). Temporary: try the system field again with each new iOS/macOS release.
 
+**Messages on a Mac:** there's no long press. A click and drag selects a message's text (Command-C copies it), through an invisible text view over the bubble's label, the same way the lifted overlay makes its text selectable. Every right-click on a bubble lifts it into the overlay: the Mac sends right-clicks only to context menus, so the list's context menu lifts the message instead of showing a menu, and the text view passes right-clicks through so its own menu never shows. The lift starts at full size and doesn't bounce (a long press shrinks the bubble first and springs it out), and closing fades the blur, whose effect doesn't animate away on a Mac. Everywhere, a lifted bubble is 5% larger, growing away from its side of the screen.
+
 **Rules:** shared code never names a network or casts to one; a network-specific need becomes an optional capability any network could use; every declared capability is implemented (no silent no-ops); adapters are tested against recorded pages without the UI.
 
 ## Storage

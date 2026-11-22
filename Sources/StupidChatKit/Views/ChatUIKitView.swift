@@ -293,8 +293,11 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         let dismissTap = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboard))
         dismissTap.cancelsTouchesInView = false
         collectionView.addGestureRecognizer(dismissTap)
-        collectionView.addGestureRecognizer(messagePress)
-        collectionView.addGestureRecognizer(messageLift)
+        // On a Mac a click and drag selects text, so messages lift only on a right-click.
+        if !ProcessInfo.processInfo.isiOSAppOnMac {
+            collectionView.addGestureRecognizer(messagePress)
+            collectionView.addGestureRecognizer(messageLift)
+        }
         collectionView.showsVerticalScrollIndicator = false
         if #available(iOS 26.0, *) {
             // UIKit's equivalent of `.scrollEdgeEffectStyle(.soft, for: .top)`: messages soften under the bar.
@@ -2406,13 +2409,20 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     }
 
     /// A long press on a message lifts it (`liftMessage`); the context menu is left for presses beside bubbles,
-    /// not on reaction chips, whose own menu lists who reacted. On a Mac this menu is the right-click on bubbles
-    /// too: the Mac sends it only right-clicks, which never reach the long press.
+    /// not on reaction chips, whose own menu lists who reacted. On a Mac, where the context menu is a right-click
+    /// (which never reaches the long press), a right-click on a bubble lifts it the same way.
     func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath], point: CGPoint) -> UIContextMenuConfiguration? {
-        guard let indexPath = indexPaths.first, ProcessInfo.processInfo.isiOSAppOnMac || focusTarget(at: point) == nil,
-              !isOnReactions(at: point, indexPath: indexPath, in: collectionView),
-              case let .message(key) = dataSource.itemIdentifier(for: indexPath),
-              let menu = messageMenu(for: messageId(forKey: key))
+        guard let indexPath = indexPaths.first, !isOnReactions(at: point, indexPath: indexPath, in: collectionView) else { return nil }
+        if let target = focusTarget(at: point) {
+            if ProcessInfo.processInfo.isiOSAppOnMac, presentedViewController == nil {
+                // Presented after the context menu interaction has declined, so it doesn't race the overlay.
+                DispatchQueue.main.async { [weak self] in self?.lift(target) }
+            }
+            return nil
+        }
+        guard
+            case let .message(key) = dataSource.itemIdentifier(for: indexPath),
+            let menu = messageMenu(for: messageId(forKey: key))
         else { return nil }
         return UIContextMenuConfiguration(actionProvider: { _ in menu.uiMenu })
     }
@@ -2488,8 +2498,13 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     }
 
     @objc private func liftMessage(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began,
-              let target = focusTarget(at: gesture.location(in: collectionView)),
+        guard gesture.state == .began, let target = focusTarget(at: gesture.location(in: collectionView)) else { return }
+        lift(target)
+    }
+
+    /// Lifts a message into the focus overlay with its reactions and actions: a long press, or a right-click on a Mac.
+    private func lift(_ target: (id: String, cell: ChatMessageCell)) {
+        guard presentedViewController == nil,
               let message = messagesById[target.id],
               let menu = messageMenu(for: target.id)
         else { return }
