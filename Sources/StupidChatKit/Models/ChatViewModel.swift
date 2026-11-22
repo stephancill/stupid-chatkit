@@ -1510,6 +1510,7 @@ public class ChatViewModel: ObservableObject {
     var reportsSummary = true
     private var summaryHolds = 0
     private var summaryIsPending = false
+    private var isSummaryHeldForScrolling = false
 
     /// Reports the row once for changes made together (new messages, then their unread count), rather than once
     /// with each.
@@ -1523,6 +1524,16 @@ public class ChatViewModel: ObservableObject {
             summaryIsPending = false
             reportSummary()
         }
+    }
+
+    /// Holds the row while the user scrolls the chat, and reports it once the list comes to rest. Reading while
+    /// scrolling drops the unread count a message at a time, and each report rebuilds the Chats list (sorting it,
+    /// caching it to disk, loading ahead and redrawing it off screen), which took longer than a frame and made the
+    /// chat stutter through unread messages (observed 2026-11-22).
+    func holdSummaryWhileScrolling(_ isScrolling: Bool) {
+        guard isScrolling != isSummaryHeldForScrolling else { return }
+        isSummaryHeldForScrolling = isScrolling
+        isScrolling ? holdSummary() : releaseSummary()
     }
 
     /// An older window doesn't reach the newest message, so it has nothing to report about the latest one.
