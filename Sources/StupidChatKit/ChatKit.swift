@@ -24,6 +24,9 @@ public enum ChatKit {
     /// one the chat has loaded and older ones as they load. Unset (the default), each opens alone in the chat's image
     /// viewer or video player.
     public static var openChatMedia: ((ChatMediaGallery) -> Void)?
+    /// The languages voice messages are transcribed in, most likely first; each is tried until one is clearly
+    /// right. The default is the user's preferred languages.
+    public static var transcriptionLanguages: () -> [Locale] = { Locale.preferredLanguages.map(Locale.init(identifier:)) }
     /// Where every chat's history is kept. The default is in Application Support; an app whose notification
     /// extension writes messages too sets one in its App Group container before any chat is made.
     public static var store: ChatStore = {

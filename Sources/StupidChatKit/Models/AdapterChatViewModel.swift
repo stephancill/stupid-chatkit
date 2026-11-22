@@ -512,6 +512,8 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     private var stateSaveTask: Task<Void, Never>?
     /// Voice messages being sent this visit → the recording the composer made, played while it sends.
     private var recordings: [String: ChatVoiceNote] = [:]
+    /// Loaded from the store when first asked for.
+    private var transcripts: [String: ChatTranscript]?
     /// A computed property, since generic classes can't have static stored ones.
     private static var jumpPageLimit: Int {
         20
@@ -1261,6 +1263,30 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
             return recording
         }
         return await (adapter as? any ChatAudioPreviewing)?.audioPreviewURL(for: previewId)
+    }
+
+    // MARK: Transcripts
+
+    override public var canTranscribeVoice: Bool {
+        if #available(iOS 26, *) { true } else { false }
+    }
+
+    override public func transcript(ofMessage messageId: String) -> ChatTranscript? {
+        if transcripts == nil {
+            transcripts = (try? store.transcripts(chatKey: chatKey)) ?? [:]
+        }
+        return transcripts?[messageId]
+    }
+
+    override public func transcribeVoice(_ previewId: String, ofMessage messageId: String, language: Locale?) async throws -> ChatTranscript {
+        guard #available(iOS 26, *) else { throw ChatTranscriptionError.unavailable }
+        guard let url = await audioPreviewURL(for: previewId) else { throw ChatTranscriptionError.audioUnavailable }
+        let languages = language.map { [$0] } ?? ChatKit.transcriptionLanguages()
+        let transcript = try await ChatVoiceTranscriber.transcribe(fileURL: url, languages: languages)
+        try? store.setTranscript(transcript, messageId: messageId, chatKey: chatKey)
+        _ = self.transcript(ofMessage: messageId)
+        transcripts?[messageId] = transcript
+        return transcript
     }
 
     // MARK: Links

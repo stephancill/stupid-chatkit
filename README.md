@@ -2,7 +2,7 @@
 
 The chat framework from [stupid social](https://github.com/stephancill/stupid-social) as a Swift package: one chat screen and Chats list for any number of networks, with an adapter per network. It knows no network itself.
 
-You get message lists with replies, reactions, mentions, custom emoji, stickers (Lottie and WebM, drawn without dependencies), voice messages, photos, videos and files; optimistic sending and editing; drafts; unread counting and the "New Messages" divider; debounced read markers; a local message store that opens every chat on its messages at once, fills gaps as you scroll and loads the Chats list's chats ahead; sending before a chat connects; search; forwarding across networks; and a merged, cached Chats list. A network adds only what translates between it and the kit: a `ChatAdapter` for a conversation and a `ChatListProvider` for its rows. Optional abilities (editing, deleting, reactions, typing, mentions, stickers, voice, forwarding, a composer menu, stopping in-flight work, muting and archiving the chat, …) are separate protocols, and the screen offers each exactly when an adapter adopts it. Muting and archiving are offered through `ChatViewModel` (`canMute`, `isMuted`, `setMuted`, and the same for archiving) for an app's chat details screen to show.
+You get message lists with replies, reactions, mentions, custom emoji, stickers (Lottie and WebM, drawn without dependencies), voice messages, photos, videos and files; optimistic sending and editing; drafts; unread counting and the "New Messages" divider; debounced read markers; a local message store that opens every chat on its messages at once, fills gaps as you scroll and loads the Chats list's chats ahead; sending before a chat connects; search; forwarding across networks; and a merged, cached Chats list. A network adds only what translates between it and the kit: a `ChatAdapter` for a conversation and a `ChatListProvider` for its rows. Optional abilities (editing, deleting, reactions, typing, mentions, stickers, voice, forwarding, a composer menu, stopping in-flight work, muting and archiving the chat, …) are separate protocols, and the screen offers each exactly when an adapter adopts it. On iOS 26 and later, voice messages can be transcribed on the device in the user's languages (`ChatKit.transcriptionLanguages`), with no adapter work. Muting and archiving are offered through `ChatViewModel` (`canMute`, `isMuted`, `setMuted`, and the same for archiving) for an app's chat details screen to show.
 
 iOS 18 or later. `docs/DESIGN.md` has the design.
 
@@ -118,6 +118,8 @@ ChatKit.openAppLink = { url, base in MyRouter.open(url) }
 ChatKit.resolveLink = { url in MyPosts.embed(for: url) }
 // Open a post's photos and videos (`.post` embeds) in your own full-screen viewer instead of the kit's.
 ChatKit.openPostMedia = { post, index in MyMediaViewer.present(post, at: index) }
+// The languages voice messages are transcribed in, most likely first (default: the user's preferred languages).
+ChatKit.transcriptionLanguages = { [Locale(identifier: "en-ZA"), Locale(identifier: "de-DE")] }
 // Open a chat's photos and videos in your own viewer, paging through the chat's others (and older ones as they load).
 ChatKit.openChatMedia = { gallery in MyMediaViewer.present(gallery) }
 // Where history is kept; the default is in Application Support. Share one with an extension through an App Group.

@@ -72,6 +72,10 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     /// Message embeds tapped open to their full text, as `<message id>|<embed index>`; they stay open while the
     /// chat is.
     private var expandedEmbeds: Set<String> = []
+    /// Voice messages being transcribed, folded away, or that failed (with why), by message id.
+    private var transcribingVoices: Set<String> = []
+    private var hiddenTranscripts: Set<String> = []
+    private var failedTranscripts: [String: String] = [:]
     /// Hides the pinned date header a moment after scrolling stops.
     private var dateHeaderHideWork: DispatchWorkItem?
     /// What message text highlights while searching; see `ChatSearch`.
@@ -347,6 +351,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
                     openFile: { [weak self] url, filename in await self?.openFile(url, filename: filename) },
                     audioPlayer: audioPlayer,
                     previewURL: { [weak self] id in await self?.viewModel.audioPreviewURL(for: id) },
+                    transcription: { [weak self] previewId in self?.transcription(of: previewId, in: id) },
                     showMentionedUser: { [weak self] userId in
                         // The profile fills in what the network knows about the user.
                         self?.showProfile(ChatUser(id: userId, name: nil, avatarURL: nil))
@@ -3155,6 +3160,131 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         guard snapshot.itemIdentifiers.contains(item) else { return }
         snapshot.reconfigureItems([item])
         dataSource.apply(snapshot, animatingDifferences: false)
+    }
+
+    private func transcription(of previewId: String, in messageId: String) -> ChatVoiceView.Transcription? {
+        guard viewModel.canTranscribeVoice else { return nil }
+        let state: ChatVoiceView.Transcription.State = if transcribingVoices.contains(messageId) {
+            .transcribing
+        } else if let transcript = viewModel.transcript(ofMessage: messageId) {
+            hiddenTranscripts.contains(messageId) ? .hidden(transcript) : .shown(transcript)
+        } else if let reason = failedTranscripts[messageId] {
+            .failed(reason)
+        } else {
+            .none
+        }
+        return ChatVoiceView.Transcription(
+            state: state,
+            transcribe: { [weak self] language in self?.transcribe(previewId, in: messageId, language: language) },
+            toggle: { [weak self] in
+                guard let self else { return }
+                if hiddenTranscripts.remove(messageId) == nil {
+                    hiddenTranscripts.insert(messageId)
+                }
+                reconfigureTranscript(of: messageId)
+            },
+        )
+    }
+
+    private func transcribe(_ previewId: String, in messageId: String, language: Locale?) {
+        guard transcribingVoices.insert(messageId).inserted else { return }
+        failedTranscripts[messageId] = nil
+        hiddenTranscripts.remove(messageId)
+        reconfigureTranscript(of: messageId)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await viewModel.transcribeVoice(previewId, ofMessage: messageId, language: language)
+            } catch {
+                failedTranscripts[messageId] = switch error as? ChatTranscriptionError {
+                case .noSpeech: "No speech heard"
+                case .notUnderstood: "Couldn't make it out in your languages"
+                case .unsupportedLanguage: "None of your languages can be transcribed"
+                case .audioUnavailable: "The voice message couldn't be loaded"
+                case .unavailable: "This device can't transcribe"
+                case nil: "Couldn't transcribe"
+                }
+            }
+            transcribingVoices.remove(messageId)
+            reconfigureTranscript(of: messageId)
+        }
+    }
+
+    /// Draws a voice message again as its transcript comes or goes. The list takes its final layout at once (at the
+    /// bottom it stays there; elsewhere the lowest message on screen keeps its place), then every message on screen
+    /// slides from where it was. The general path (`applyKeepingBottom`) animates cell frames, but a cell whose
+    /// content changed lays out at its new size straight away, so the bubble overlapped the message above on the
+    /// way in and dropped under the composer on the way out.
+    private func reconfigureTranscript(of id: String) {
+        var snapshot = dataSource.snapshot()
+        let item = Item.message(itemKey(for: id))
+        guard snapshot.itemIdentifiers.contains(item) else { return }
+        snapshot.reconfigureItems([item])
+        guard hasScrolledInitially, !isAnchoredToDivider, view.window != nil else {
+            applyKeepingBottom(snapshot)
+            return
+        }
+        let wasAtBottom = isPinnedToBottom && !hasLater
+        collectionView.layoutIfNeeded()
+        let anchor = wasAtBottom ? nil : lowestVisibleItem()
+        var screenTops: [Item: CGFloat] = [:]
+        for indexPath in collectionView.indexPathsForVisibleItems {
+            if let visible = dataSource.itemIdentifier(for: indexPath), let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame {
+                screenTops[visible] = frame.minY - collectionView.contentOffset.y
+            }
+        }
+        let bubbleHeightBefore = dataSource.indexPath(for: item)
+            .flatMap { collectionView.cellForItem(at: $0) as? ChatMessageCell }?.bubbleView.bounds.height
+        UIView.performWithoutAnimation {
+            dataSource.apply(snapshot, animatingDifferences: false)
+            collectionView.layoutIfNeeded()
+            updateTopInsetForShortContent()
+            if wasAtBottom {
+                collectionView.contentOffset.y = bottomOffset
+            } else if let anchor, let indexPath = dataSource.indexPath(for: anchor.item),
+                      let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame
+            {
+                collectionView.contentOffset.y = min(max(frame.maxY - anchor.screenMaxY, -collectionView.adjustedContentInset.top), bottomOffset)
+            }
+            collectionView.layoutIfNeeded()
+        }
+        var sliding: [UICollectionViewCell] = []
+        for indexPath in collectionView.indexPathsForVisibleItems {
+            guard let visible = dataSource.itemIdentifier(for: indexPath), let before = screenTops[visible],
+                  let cell = collectionView.cellForItem(at: indexPath)
+            else { continue }
+            let offset = before - (cell.frame.minY - collectionView.contentOffset.y)
+            guard abs(offset) > 0.5 else { continue }
+            cell.transform = CGAffineTransform(translationX: 0, y: offset)
+            sliding.append(cell)
+        }
+        // A grown bubble is uncovered from its old height while it slides up, so its bottom stays where it was
+        // (on the composer, at the bottom) instead of its new text showing below it, behind the composer.
+        var reveal: (bubble: UIView, mask: UIView)?
+        if let bubbleHeightBefore, let indexPath = dataSource.indexPath(for: item),
+           let bubble = (collectionView.cellForItem(at: indexPath) as? ChatMessageCell)?.bubbleView,
+           bubble.bounds.height > bubbleHeightBefore + 0.5
+        {
+            let mask = UIView(frame: CGRect(x: 0, y: 0, width: bubble.bounds.width, height: bubbleHeightBefore))
+            mask.backgroundColor = .black
+            mask.layer.cornerRadius = bubble.layer.cornerRadius
+            mask.layer.cornerCurve = bubble.layer.cornerCurve
+            bubble.mask = mask
+            reveal = (bubble, mask)
+        }
+        guard !sliding.isEmpty || reveal != nil else { return }
+        UIView.animate(withDuration: 0.3, delay: 0, options: [.curveEaseOut, .allowUserInteraction, .beginFromCurrentState]) {
+            for cell in sliding {
+                cell.transform = .identity
+            }
+            if let reveal {
+                reveal.mask.frame = reveal.bubble.bounds
+            }
+        } completion: { _ in
+            if let reveal, reveal.bubble.mask === reveal.mask {
+                reveal.bubble.mask = nil
+            }
+        }
     }
 
     private func toggleEmbed(_ index: Int, of id: String) {

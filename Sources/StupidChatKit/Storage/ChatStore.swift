@@ -146,6 +146,15 @@ public final class ChatStore: @unchecked Sendable {
         failure TEXT
     );
     CREATE INDEX IF NOT EXISTS outbox_chat ON outbox(chat, created);
+    CREATE TABLE IF NOT EXISTS voice_transcript (
+        chat TEXT NOT NULL,
+        message TEXT NOT NULL,
+        account TEXT NOT NULL,
+        text TEXT NOT NULL,
+        locale TEXT NOT NULL,
+        PRIMARY KEY (chat, message)
+    );
+    CREATE INDEX IF NOT EXISTS voice_transcript_account ON voice_transcript(account);
     """
 
     static func accountId(of chatKey: String) -> String {
@@ -453,6 +462,28 @@ public final class ChatStore: @unchecked Sendable {
         try locked { try database.rows("SELECT DISTINCT chat FROM outbox", map: { $0.text(0) ?? "" }) }
     }
 
+    // MARK: Transcripts
+
+    /// Voice messages' transcripts, by message id. Not by the embed's preview id, which can change: Telegram's
+    /// names a file reference the network replaces.
+    public func transcripts(chatKey: String) throws -> [String: ChatTranscript] {
+        let rows = try locked {
+            try database.rows("SELECT message, text, locale FROM voice_transcript WHERE chat = ?", [.text(chatKey)]) { row in
+                (row.text(0) ?? "", ChatTranscript(text: row.text(1) ?? "", locale: row.text(2) ?? ""))
+            }
+        }
+        return Dictionary(rows, uniquingKeysWith: { _, last in last })
+    }
+
+    public func setTranscript(_ transcript: ChatTranscript, messageId: String, chatKey: String) throws {
+        try locked {
+            try database.run(
+                "INSERT OR REPLACE INTO voice_transcript (chat, message, account, text, locale) VALUES (?, ?, ?, ?, ?)",
+                [.text(chatKey), .text(messageId), .text(Self.accountId(of: chatKey)), .text(transcript.text), .text(transcript.locale)],
+            )
+        }
+    }
+
     // MARK: Maintenance
 
     /// Bytes on disk, the write-ahead log included.
@@ -468,7 +499,7 @@ public final class ChatStore: @unchecked Sendable {
         let keys = try locked {
             try database.transaction { () -> Set<String> in
                 let keys = try Set(database.rows("SELECT key FROM chat", map: { $0.text(0) ?? "" }))
-                try database.execute("DELETE FROM record; DELETE FROM chunk; DELETE FROM chat;")
+                try database.execute("DELETE FROM record; DELETE FROM chunk; DELETE FROM chat; DELETE FROM voice_transcript;")
                 return keys
             }
         }
@@ -487,6 +518,7 @@ public final class ChatStore: @unchecked Sendable {
                 }
                 try database.run("DELETE FROM chat WHERE account = ?", [.text(accountId)])
                 try database.run("DELETE FROM outbox WHERE account = ?", [.text(accountId)])
+                try database.run("DELETE FROM voice_transcript WHERE account = ?", [.text(accountId)])
                 return keys
             }
         }

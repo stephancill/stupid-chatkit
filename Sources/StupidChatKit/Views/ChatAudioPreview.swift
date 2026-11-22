@@ -260,7 +260,26 @@ final class ChatAudioCardView: UIView {
 /// A voice message, like Telegram's: a round play button, the waveform filling in as it plays (a tap on it
 /// seeks), and the time played, or the length while it isn't playing.
 final class ChatVoiceView: UIView {
+    /// What the bubble shows of a transcript, and what its button does.
+    struct Transcription {
+        enum State {
+            case none
+            case transcribing
+            case shown(ChatTranscript)
+            /// Transcribed, but folded away.
+            case hidden(ChatTranscript)
+            case failed(String)
+        }
+
+        var state: State
+        /// Transcribes in a language, or in the best of the user's languages (`nil`); or shows or hides the transcript.
+        var transcribe: @MainActor (Locale?) -> Void
+        var toggle: @MainActor () -> Void
+    }
+
     private let playButton = UIButton(type: .system)
+    private let transcribeButton = UIButton(type: .system)
+    private let transcriptLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let waveformView = ChatWaveformView()
     private let timeLabel = UILabel()
@@ -273,7 +292,7 @@ final class ChatVoiceView: UIView {
         isOwn ? .white : .systemBlue
     }
 
-    init(previewId: String, duration: Double?, waveform: [Double], isOwn: Bool, player: ChatAudioPreviewPlayer, resolveURL: @escaping (String) async -> URL?) {
+    init(previewId: String, duration: Double?, waveform: [Double], isOwn: Bool, player: ChatAudioPreviewPlayer, resolveURL: @escaping (String) async -> URL?, transcription: Transcription? = nil) {
         self.previewId = previewId
         self.duration = duration
         self.player = player
@@ -308,15 +327,31 @@ final class ChatVoiceView: UIView {
         let row = UIStackView(arrangedSubviews: [playButton, column])
         row.spacing = 10
         row.alignment = .center
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
+        let stack = UIStackView(arrangedSubviews: [row])
+        stack.axis = .vertical
+        stack.spacing = 6
+        stack.alignment = .fill
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
         // Longer messages get a longer waveform, as in Telegram.
         let width = min(max(110 + CGFloat(duration ?? 0) * 3, 120), 190)
+        if let transcription {
+            addTranscription(transcription, to: row, stack: stack, isOwn: isOwn, accent: accent)
+            // The transcript wraps at the row's width, given before the first measurement.
+            transcriptLabel.preferredMaxLayoutWidth = 44 + 10 + width + 10 + 28
+        }
+        // A transcript coming or going grows or shrinks the bubble in an animation, which starts from the old
+        // height with the new content already laid out. Pinned to the top, with a bottom that gives way and the
+        // overflow clipped, the content stays in place while the bubble uncovers or covers it from below; with
+        // every constraint required, Auto Layout broke one at random and the text jumped up under the waveform.
+        clipsToBounds = true
+        let bottom = stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2)
+        bottom.priority = .required - 1
         NSLayoutConstraint.activate([
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 2),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            bottom,
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             playButton.widthAnchor.constraint(equalToConstant: 44),
             playButton.heightAnchor.constraint(equalToConstant: 44),
             spinner.centerXAnchor.constraint(equalTo: playButton.centerXAnchor),
@@ -334,6 +369,88 @@ final class ChatVoiceView: UIView {
     @available(*, unavailable)
     required init?(coder _: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    private func addTranscription(_ transcription: Transcription, to row: UIStackView, stack: UIStackView, isOwn: Bool, accent: UIColor) {
+        transcribeButton.backgroundColor = accent.withAlphaComponent(isOwn ? 0.25 : 0.12)
+        transcribeButton.tintColor = accent
+        transcribeButton.layer.cornerRadius = 8
+        transcribeButton.translatesAutoresizingMaskIntoConstraints = false
+        // The button sits level with the waveform, as in Telegram, rather than centred on the row.
+        let slot = UIView()
+        slot.translatesAutoresizingMaskIntoConstraints = false
+        slot.addSubview(transcribeButton)
+        row.addArrangedSubview(slot)
+        NSLayoutConstraint.activate([
+            slot.widthAnchor.constraint(equalToConstant: 28),
+            slot.heightAnchor.constraint(equalToConstant: 44),
+            transcribeButton.widthAnchor.constraint(equalToConstant: 28),
+            transcribeButton.heightAnchor.constraint(equalToConstant: 28),
+            transcribeButton.centerXAnchor.constraint(equalTo: slot.centerXAnchor),
+            transcribeButton.centerYAnchor.constraint(equalTo: waveformView.centerYAnchor),
+        ])
+
+        let symbol = switch transcription.state {
+        case .none, .failed, .transcribing: "text.bubble"
+        case .shown: "chevron.up"
+        case .hidden: "text.bubble.fill"
+        }
+        transcribeButton.setImage(UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)), for: .normal)
+        transcribeButton.accessibilityLabel = if case .shown = transcription.state { "Hide Transcript" } else { "Transcribe Voice Message" }
+        if case .transcribing = transcription.state {
+            transcribeButton.isEnabled = false
+        }
+        transcribeButton.addAction(UIAction { _ in
+            switch transcription.state {
+            case .none, .failed: transcription.transcribe(nil)
+            case .shown, .hidden: transcription.toggle()
+            case .transcribing: break
+            }
+        }, for: .primaryActionTriggered)
+        // A long press picks the language.
+        transcribeButton.menu = Self.languageMenu(transcribe: transcription.transcribe)
+
+        transcriptLabel.numberOfLines = 0
+        transcriptLabel.font = .preferredFont(forTextStyle: .subheadline)
+        // Squeezed, a label centres its lines and cuts the first one off; it must overflow and be clipped instead.
+        transcriptLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+        switch transcription.state {
+        case let .shown(transcript):
+            transcriptLabel.text = transcript.text
+            transcriptLabel.textColor = isOwn ? .white : .label
+            stack.addArrangedSubview(transcriptLabel)
+        case let .failed(reason):
+            transcriptLabel.text = reason
+            transcriptLabel.textColor = isOwn ? UIColor.white.withAlphaComponent(0.8) : .secondaryLabel
+            stack.addArrangedSubview(transcriptLabel)
+        case .transcribing:
+            // Where the text will go, pulsing until it comes.
+            let skeleton = ChatTranscriptSkeleton(color: accent.withAlphaComponent(isOwn ? 0.35 : 0.2))
+            skeleton.setContentCompressionResistancePriority(.required, for: .vertical)
+            stack.addArrangedSubview(skeleton)
+        case .none, .hidden:
+            break
+        }
+    }
+
+    /// "Transcribe in" the user's languages first, then every language the device supports.
+    private static func languageMenu(transcribe: @escaping @MainActor (Locale?) -> Void) -> UIMenu {
+        UIMenu(title: "Transcribe in", children: [UIDeferredMenuElement.uncached { completion in
+            Task { @MainActor in
+                guard #available(iOS 26, *) else { return completion([]) }
+                let yours = await ChatVoiceTranscriber.supported(ChatKit.transcriptionLanguages()).map(\.locale)
+                let all = await ChatVoiceTranscriber.supportedLanguages()
+                @MainActor func action(_ locale: Locale) -> UIAction {
+                    UIAction(title: ChatVoiceTranscriber.name(locale)) { _ in
+                        transcribe(locale)
+                    }
+                }
+                completion([
+                    UIMenu(options: .displayInline, children: yours.map(action)),
+                    UIMenu(title: "Other Languages", children: all.map(action)),
+                ])
+            }
+        }])
     }
 
     @objc private func seek(_ tap: UITapGestureRecognizer) {
@@ -375,6 +492,52 @@ final class ChatVoiceView: UIView {
     private static func format(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds.rounded(.down)))
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// Two lines of placeholder text that pulse while a voice message is transcribed.
+final class ChatTranscriptSkeleton: UIView {
+    init(color: UIColor) {
+        super.init(frame: .zero)
+        let lines = [1, 0.6].map { fraction -> UIView in
+            let line = UIView()
+            line.backgroundColor = color
+            line.layer.cornerRadius = 4.5
+            line.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(line)
+            NSLayoutConstraint.activate([
+                line.leadingAnchor.constraint(equalTo: leadingAnchor),
+                line.widthAnchor.constraint(equalTo: widthAnchor, multiplier: fraction),
+                line.heightAnchor.constraint(equalToConstant: 9),
+            ])
+            return line
+        }
+        NSLayoutConstraint.activate([
+            lines[0].topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            lines[1].topAnchor.constraint(equalTo: lines[0].bottomAnchor, constant: 8),
+            lines[1].bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+        ])
+        isAccessibilityElement = true
+        accessibilityLabel = "Transcribing"
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    /// A layer's animations end when it leaves the window, as a cell's views do when it scrolls away.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil, layer.animation(forKey: "pulse") == nil else { return }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1
+        pulse.toValue = 0.4
+        pulse.duration = 0.8
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(pulse, forKey: "pulse")
     }
 }
 

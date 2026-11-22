@@ -1579,6 +1579,22 @@ public class ChatViewModel: ObservableObject {
         nil
     }
 
+    /// Whether `.voice` messages can be transcribed (on the device, iOS 26 or later).
+    public var canTranscribeVoice: Bool {
+        false
+    }
+
+    /// A voice message's transcript, if it has one.
+    public func transcript(ofMessage _: String) -> ChatTranscript? {
+        nil
+    }
+
+    /// Transcribes the message's voice embed (by its preview id) and keeps the transcript: in `language`, or in
+    /// whichever of `ChatKit.transcriptionLanguages` fits best.
+    public func transcribeVoice(_: String, ofMessage _: String, language _: Locale?) async throws -> ChatTranscript {
+        throw ChatTranscriptionError.unavailable
+    }
+
     public func avatarURL(for user: ChatUser) -> URL? {
         user.avatarURL
     }

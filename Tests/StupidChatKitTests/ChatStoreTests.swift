@@ -175,6 +175,19 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertEqual(try store.window(chatKey: "other|test:chat", at: .newest(count: 10)).records.count, 3)
     }
 
+    func testTranscriptsAreKeptPerChatAndGoWithTheAccount() throws {
+        let other = "other|test:chat"
+        try store.setTranscript(ChatTranscript(text: "Hallo", locale: "de_DE"), messageId: "1", chatKey: chat)
+        try store.setTranscript(ChatTranscript(text: "Hello", locale: "en_US"), messageId: "1", chatKey: chat)
+        try store.setTranscript(ChatTranscript(text: "Hola", locale: "es_ES"), messageId: "1", chatKey: other)
+        XCTAssertEqual(try store.transcripts(chatKey: chat), ["1": ChatTranscript(text: "Hello", locale: "en_US")], "a new transcript replaces the old")
+        try store.removeAll(accountId: "account")
+        XCTAssertEqual(try store.transcripts(chatKey: chat), [:])
+        XCTAssertEqual(try store.transcripts(chatKey: other).count, 1)
+        try store.removeHistory()
+        XCTAssertEqual(try store.transcripts(chatKey: other), [:])
+    }
+
     func testProvisionalRecordsShowUntilTheNetworksCopyAndNeverMakeAChatCurrent() throws {
         try store.apply(page(1 ... 3), for: .newest, chatKey: chat)
         try store.writeProvisional([record(9, text: "pushed")], chatKey: chat)

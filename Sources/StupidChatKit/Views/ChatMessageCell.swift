@@ -233,6 +233,8 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         /// Plays `.audio` previews; the chat owns it so only one plays at a time.
         var audioPlayer: ChatAudioPreviewPlayer?
         var previewURL: (String) async -> URL? = { _ in nil }
+        /// A voice message's transcript and its button, by preview id; `nil` where voice can't be transcribed.
+        var transcription: (String) -> ChatVoiceView.Transcription? = { _ in nil }
         var showMentionedUser: (String) -> Void = { _ in }
         var openLink: (URL) -> Void = { _ in }
         var revealSpoilers: () -> Void = {}
@@ -808,8 +810,10 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         let hasMedia = !mediaStack.arrangedSubviews.isEmpty
         let hasContent = text != nil || otherEmbeds > 0 || !reactions.isEmpty || !hasMedia
         // After cards the time needs its own line; reactions leave it room beside them, and on a lone image it sits on it.
-        // A lone voice message has room for the time beside its length, as in Telegram.
+        // A lone voice message has room for the time beside its length, as in Telegram; text under it, such as
+        // its transcript, needs the time on a line of its own.
         let isLoneVoice = text == nil && reactions.isEmpty && embeds.count == 1 && embeds.allSatisfy(Self.fitsContent)
+            && !embeds.contains(where: showsTextUnder)
         timeSpacer.isHidden = (text != nil && endsWithText) || !reactions.isEmpty || !hasContent || isLoneVoice
         headerStack.isHidden = !hasHeader
         mediaStack.isHidden = !hasMedia
@@ -1348,6 +1352,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
                 isOwn: isOwn,
                 player: actions.audioPlayer ?? ChatAudioPreviewPlayer(),
                 resolveURL: actions.previewURL,
+                transcription: actions.transcription(previewId),
             )
         case let .card(title, subtitle, systemImage, imageURL, link):
             return linkCard(title: title, subtitle: subtitle, systemImage: systemImage, imageURL: imageURL, link: link)
@@ -1387,6 +1392,15 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
                 }
             })
             return row
+        }
+    }
+
+    /// Whether a voice message shows its transcript, its placeholder or why it has none under the waveform.
+    private func showsTextUnder(_ embed: ChatEmbed) -> Bool {
+        guard case let .voice(previewId, _, _) = embed, let transcription = actions.transcription(previewId) else { return false }
+        switch transcription.state {
+        case .shown, .failed, .transcribing: return true
+        case .none, .hidden: return false
         }
     }
 
@@ -1757,11 +1771,23 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
             shownImages[url] = shown
             return
         }
+        // Networks sign media URLs and sign them again on a later fetch (an expiry in the query), so a message
+        // reloaded while its chat stays open can come back with another URL for the same file. The photo shown for
+        // that file stays until the new URL loads, rather than blanking and drawing again.
+        if let shown = previousImages.first(where: { Self.isSameFile($0.key, url) })?.value {
+            imageView.image = shown
+            shownImages[url] = shown
+        }
         imageTasks.append(Task { [weak self, weak imageView] in
             guard let image = await ChatMediaImageCache.shared.load(url), !Task.isCancelled else { return }
             imageView?.image = image
             self?.shownImages[url] = image
         })
+    }
+
+    /// URLs that differ only in their query and fragment.
+    static func isSameFile(_ lhs: URL, _ rhs: URL) -> Bool {
+        lhs.scheme == rhs.scheme && lhs.host() == rhs.host() && lhs.path(percentEncoded: true) == rhs.path(percentEncoded: true)
     }
 
     /// A link preview or shared item, like Telegram's: a bar in the accent beside the site (or a symbol saying
