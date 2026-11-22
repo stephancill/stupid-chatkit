@@ -255,6 +255,22 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertEqual(list.chats.first?.unreadCount, 2, "a row with a newer message is the network's")
     }
 
+    /// An open chat's latest photo shows as the row's thumbnail, and text after it takes the thumbnail away.
+    func testAnOpenChatsLatestPhotoBecomesTheRowsThumbnail() async throws {
+        let list = makeList([(FakeProvider(network: .telegram, page: .init(chats: [row("t", .telegram, minutesAgo: 1)], archived: [])), "telegram")])
+        await list.load()
+        let chat = try ChatViewModel(network: .telegram, chatKey: "telegram|t", title: "t", subtitle: "", canReply: true, draftStore: ChatDraftStore(defaults: XCTUnwrap(UserDefaults(suiteName: "ChatListViewModelTests-\(UUID().uuidString)"))))
+        _ = list.follow(chat, chatId: "telegram|t")
+        let photoURL = try XCTUnwrap(URL(string: "https://example.com/photo.jpg"))
+        let photo = ChatMessage(id: "2", sender: ChatUser(id: "u", name: "U", avatarURL: nil), timestamp: Date(), text: "clean", embeds: [.image(url: photoURL, aspectRatio: 1, alt: nil, link: nil, opensViewer: true)], isOwn: false)
+        chat.summaryDidChange?(photo, "clean", 0, nil)
+        XCTAssertEqual(list.chats.first?.previewThumbnailURL, photoURL)
+
+        let text = ChatMessage(id: "3", sender: ChatUser(id: "u", name: "U", avatarURL: nil), timestamp: Date(), text: "hi", isOwn: false)
+        chat.summaryDidChange?(text, "hi", 0, nil)
+        XCTAssertNil(list.chats.first?.previewThumbnailURL)
+    }
+
     /// Rows from before the app was in the background (or from the cache at launch) may be behind: a chat opened from
     /// one, such as from a notification, mustn't take its latest message as the network's and skip loading.
     func testAChatOpenedFromAStaleRowDoesntTakeItsLatestMessage() async throws {

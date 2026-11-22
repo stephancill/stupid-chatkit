@@ -20,6 +20,8 @@ public struct ChatSummary<Destination: Hashable & Codable & Sendable>: Identifia
     public let avatarColorKey: String?
     /// The latest message, prefixed with "You: " or the sender in a group.
     public var preview: String?
+    /// A small picture of the latest message's photo or video, shown before the preview, as in Telegram.
+    public var previewThumbnailURL: URL?
     public var timestamp: Date?
     public var unreadCount: Int
     public let destination: Destination
@@ -67,6 +69,7 @@ public struct ChatSummary<Destination: Hashable & Codable & Sendable>: Identifia
         avatarURL: URL?,
         avatarColorKey: String? = nil,
         preview: String?,
+        previewThumbnailURL: URL? = nil,
         timestamp: Date?,
         unreadCount: Int,
         unseenReactionCount: Int = 0,
@@ -86,6 +89,7 @@ public struct ChatSummary<Destination: Hashable & Codable & Sendable>: Identifia
         self.avatarURL = avatarURL
         self.avatarColorKey = avatarColorKey
         self.preview = preview
+        self.previewThumbnailURL = previewThumbnailURL
         self.timestamp = timestamp
         self.unreadCount = unreadCount
         unseenReactions = unseenReactionCount
@@ -504,6 +508,7 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
             } else {
                 body
             }
+            chat.previewThumbnailURL = latest.embeds.lazy.compactMap(\.previewThumbnailURL).first
             chat.timestamp = latest.timestamp ?? chat.timestamp
             if !latest.isSending {
                 chat.latestMessageId = latest.id
@@ -660,6 +665,19 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
             return .success(ChatListPage(chats: [], archived: [], accounts: []))
         } catch {
             return .failure(error)
+        }
+    }
+}
+
+public extension ChatEmbed {
+    /// The picture a Chats row shows for a message with this embed: a photo, a video's poster, or a link
+    /// preview's first one.
+    var previewThumbnailURL: URL? {
+        switch self {
+        case let .image(url, _, _, _, opensViewer): opensViewer ? url : nil
+        case let .video(_, posterURL, _, _, _): posterURL
+        case let .linkPreview(_, _, _, media): media.lazy.compactMap(\.previewThumbnailURL).first
+        default: nil
         }
     }
 }
