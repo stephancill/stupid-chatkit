@@ -1397,11 +1397,16 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
         }
     }
 
-    /// Media that fills the bubble gets Telegram's larger size. Portrait media is sized by height, like Telegram, so
-    /// it doesn't squeeze a caption.
+    /// The width of media that fills a bubble: as wide as a bubble may be on the narrowest iPhone (80% of 375
+    /// points, less the bubble's 4-point inset).
+    static let mediaWidth: CGFloat = 296
+    /// The tallest portrait media is; it is sized by height, like Telegram, so it doesn't squeeze a caption.
+    static let mediaMaxHeight: CGFloat = 400
+
+    /// Media that fills the bubble gets the largest size a bubble allows.
     private static func sizeAsMedia(_ view: UIView, aspectRatio: Double?) {
         let ratio = CGFloat(min(max(aspectRatio ?? 4 / 3, 0.5), 2))
-        let width: CGFloat = ratio >= 1 ? 264 : max(200, min(264, 340 * ratio))
+        let width: CGFloat = ratio >= 1 ? mediaWidth : max(220, min(mediaWidth, mediaMaxHeight * ratio))
         view.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             view.widthAnchor.constraint(equalToConstant: width),
@@ -1411,7 +1416,7 @@ final class ChatMessageCell: UICollectionViewListCell, UIGestureRecognizerDelega
 
     /// An album: an odd one out on a row of its own first, then pairs of square tiles, 2 points apart.
     private func mediaGrid(_ media: [(offset: Int, element: ChatEmbed)]) -> UIView {
-        let width: CGFloat = 264
+        let width = Self.mediaWidth
         let spacing: CGFloat = 2
         var rows: [[(offset: Int, element: ChatEmbed)]] = []
         var rest = media[...]

@@ -334,9 +334,13 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
                     reactionMenu: { [weak self] emoji in self?.reactionMenu(pressed: emoji, on: id) },
                     showProfile: { [weak self] in self?.showProfile(message.sender) },
                     showImage: { [weak self] url, alt, image in
-                        self?.present(ChatImageViewerController(url: url, image: image, alt: alt), animated: true)
+                        guard let self, !openInAppViewer(url, of: id) else { return }
+                        present(ChatImageViewerController(url: url, image: image, alt: alt), animated: true)
                     },
-                    playVideo: { [weak self] url in self?.playVideo(url) },
+                    playVideo: { [weak self] url in
+                        guard let self, !openInAppViewer(url, of: id) else { return }
+                        playVideo(url)
+                    },
                     openFile: { [weak self] url, filename in await self?.openFile(url, filename: filename) },
                     audioPlayer: audioPlayer,
                     previewURL: { [weak self] id in await self?.viewModel.audioPreviewURL(for: id) },
@@ -2178,6 +2182,17 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     }
 
     // MARK: Videos and files
+
+    /// Opens the message's photo or video in the app's viewer (`ChatKit.openChatMedia`) with the rest of the chat's,
+    /// and returns whether it did. Media the gallery leaves out, such as a link preview's, opens in the chat's own.
+    private func openInAppViewer(_ url: URL, of messageId: String) -> Bool {
+        guard let open = ChatKit.openChatMedia,
+              let item = ChatMediaItem.items(in: viewModel.messages).first(where: { $0.messageId == messageId && $0.url == url })
+        else { return false }
+        audioPlayer.stop()
+        open(ChatMediaGallery(viewModel: viewModel, startKey: item.key))
+        return true
+    }
 
     private func playVideo(_ url: URL) {
         audioPlayer.stop()

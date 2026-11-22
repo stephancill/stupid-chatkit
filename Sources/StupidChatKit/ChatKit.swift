@@ -20,6 +20,10 @@ public enum ChatKit {
     /// Opens a post's photos and videos (`.post` embeds) in the app's own full-screen viewer, at the one tapped by its
     /// index in `media`. Unset (the default), they open in the chat's image viewer and video player like any other.
     public static var openPostMedia: ((ChatPost, Int) -> Void)?
+    /// Opens a chat's photos and videos in the app's own full-screen viewer, at the one tapped, paging through every
+    /// one the chat has loaded and older ones as they load. Unset (the default), each opens alone in the chat's image
+    /// viewer or video player.
+    public static var openChatMedia: ((ChatMediaGallery) -> Void)?
     /// Where every chat's history is kept. The default is in Application Support; an app whose notification
     /// extension writes messages too sets one in its App Group container before any chat is made.
     public static var store: ChatStore = {
