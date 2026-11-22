@@ -120,6 +120,8 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     /// The send button's circle while a send from the composer waits for its message to appear, which then grows
     /// out of the button into its bubble, like Messages.
     private var sendFlightOrigin: CGRect?
+    /// While set, layout updates the composer's inset but leaves the list where it is, for the caller to move.
+    private var holdsListThroughLayout = false
     /// The item whose bubble is hidden while its copy flies from the send button.
     private var flyingKey: String?
     /// While a jump's scroll animates, the messages it passes neither page in history nor count as seen.
@@ -737,7 +739,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
 
     /// A chat shorter than the screen sits just above the composer, as in Messages, rather than under the title.
     private func updateTopInsetForShortContent() {
-        guard !defersShortContentInset else { return }
+        guard !defersShortContentInset, !holdsListThroughLayout else { return }
         let current = collectionView.contentInset.top
         let barsTop = collectionView.adjustedContentInset.top - current
         let available = collectionView.bounds.height - barsTop - collectionView.adjustedContentInset.bottom
@@ -751,7 +753,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
 
     /// Keeps a pinned list at the bottom, or an opening room at its divider, through bounds, inset and cell-size changes.
     private func reanchorIfPinned() {
-        guard hasScrolledInitially, !collectionView.isDragging, !collectionView.isDecelerating else { return }
+        guard hasScrolledInitially, !holdsListThroughLayout, !collectionView.isDragging, !collectionView.isDecelerating else { return }
         if isAnchoredToDivider {
             scrollToDivider()
             return
@@ -876,6 +878,19 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
 
     /// Takes the published values rather than reading the view model, which still holds the old ones while it publishes.
     private func applySnapshot(messages: [ChatMessage], hasEarlier _: Bool, hasLater: Bool, firstUnreadId: String?) {
+        if hasScrolledInitially {
+            // A send clears the reply, edit or attachments just before its message arrives, so the composer is about
+            // to shrink. Lay it out first, holding the list still, so following the bottom below aims at the
+            // composer's new top in one move, rather than at its old one and then snapping down a frame later.
+            // A smaller inset also clamps the offset. At the bottom, following it below brings it back in range.
+            let offset = collectionView.contentOffset
+            holdsListThroughLayout = true
+            view.layoutIfNeeded()
+            holdsListThroughLayout = false
+            if isPinnedToBottom, !hasLater, collectionView.contentOffset != offset {
+                collectionView.contentOffset = offset
+            }
+        }
         let previousItems = dataSource.snapshot().itemIdentifiers
         let previousIds = previousItems.filter { if case .message = $0 { true } else { false } }
         let wasEmpty = previousIds.isEmpty
