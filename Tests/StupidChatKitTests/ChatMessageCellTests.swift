@@ -120,4 +120,43 @@ final class ChatMessageCellTests: XCTestCase {
         XCTAssertGreaterThan(height(ChatPost.Counts(replies: 3, reposts: 10, likes: 1250)), height(nil) + 10)
         XCTAssertEqual(height(ChatPost.Counts(replies: nil, reposts: nil, likes: nil)), height(nil))
     }
+
+    /// A message reloaded with its photo's URL signed again keeps showing the photo while the new URL loads.
+    func testPhotoStaysWhenItsURLIsSignedAgain() async throws {
+        let width: CGFloat = 390
+        let file = FileManager.default.temporaryDirectory.appending(path: "chat-cell-photo-\(UUID().uuidString).png")
+        let data = try XCTUnwrap(UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        }.pngData())
+        try data.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let first = try XCTUnwrap(URL(string: file.absoluteString + "?ex=1"))
+        let resigned = try XCTUnwrap(URL(string: file.absoluteString + "?ex=2"))
+        XCTAssertTrue(ChatMessageCell.isSameFile(first, resigned))
+        XCTAssertFalse(ChatMessageCell.isSameFile(first, file.deletingLastPathComponent().appending(path: "other.png")))
+        _ = await ChatMediaImageCache.shared.load(first)
+
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: width, height: 44))
+        func configure(_ url: URL) {
+            let embed = ChatEmbed.image(url: url, aspectRatio: 1, alt: nil, link: nil, opensViewer: true)
+            cell.configure(
+                message: ChatMessage(id: "photo", sender: ChatUser(id: "ada", name: "Ada", avatarURL: nil), timestamp: Date(), text: nil, embeds: [embed], isOwn: false),
+                layout: ChatBubbleLayout(isOwn: false, isSystem: false, showsName: false, showsAvatar: true, startsGroup: true),
+                reply: nil, avatarURL: nil, body: nil, embeds: [embed], reactions: [], actions: .init(), availableWidth: width,
+            )
+        }
+        func photo() -> UIImageView? {
+            var views: [UIView] = [cell.contentView]
+            while let view = views.popLast() {
+                if let imageView = view as? UIImageView, imageView.isUserInteractionEnabled { return imageView }
+                views += view.subviews
+            }
+            return nil
+        }
+        configure(first)
+        XCTAssertNotNil(photo()?.image)
+        configure(resigned)
+        XCTAssertNotNil(photo()?.image)
+    }
 }
