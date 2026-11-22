@@ -246,6 +246,11 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         }
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        viewModel.holdSummaryWhileScrolling(false)
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         audioPlayer.stop()
@@ -2217,6 +2222,17 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     func scrollViewWillBeginDragging(_: UIScrollView) {
         userHasScrolled = true
         isAnchoredToDivider = false
+        viewModel.holdSummaryWhileScrolling(true)
+    }
+
+    func scrollViewDidEndDragging(_: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate {
+            viewModel.holdSummaryWhileScrolling(false)
+        }
+    }
+
+    func scrollViewDidEndDecelerating(_: UIScrollView) {
+        viewModel.holdSummaryWhileScrolling(false)
     }
 
     func scrollViewDidEndScrollingAnimation(_: UIScrollView) {

@@ -343,6 +343,28 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testScrollingReportsTheRowOnceItStops() async {
+        let adapter = FakeAdapter()
+        adapter.pages = [[message(1), message(2), message(3)]]
+        let chat = makeChat(adapter)
+        await chat.connect()
+        var reports: [String] = []
+        chat.summaryDidChange = { latest, _, unread, _ in reports.append("\(latest?.id ?? "-"):\(unread)") }
+        chat.holdSummaryWhileScrolling(true)
+        chat.markRead(upTo: message(1))
+        chat.markRead(upTo: message(2))
+        XCTAssertEqual(chat.unreadCount, 1, "the chat's own count drops as it scrolls")
+        XCTAssertEqual(reports, [], "each report rebuilds the Chats list, too slow for a scroll frame")
+        chat.holdSummaryWhileScrolling(true)
+        chat.markRead(upTo: message(3))
+        chat.holdSummaryWhileScrolling(false)
+        XCTAssertEqual(reports, ["3:0"], "one report once the list is at rest")
+        chat.holdSummaryWhileScrolling(false)
+        chat.markRead(upTo: message(3))
+        XCTAssertEqual(reports, ["3:0"])
+        chat.disconnect()
+    }
+
     func testAFailedReadMarkIsRetried() async throws {
         let adapter = FakeAdapter()
         adapter.pages = [[message(1), message(2), message(3)]]
