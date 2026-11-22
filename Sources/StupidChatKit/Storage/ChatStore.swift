@@ -320,10 +320,15 @@ public final class ChatStore: @unchecked Sendable {
     }
 
     /// Whether the newest stored messages are the chat's newest: the newest chunk holds the network's latest message
-    /// (which makes it current for this epoch), or, without one, was current in this epoch.
+    /// (which makes it current for this epoch), or, without one, was current in this epoch. Never while it holds a
+    /// provisional message: newer ones from the network can be stored around one, and only a fetch confirms it.
     public func isCurrent(chatKey: String, latestMessageId: String?) throws -> Bool {
         try locked {
             guard let chunk = try newest(chat: chatKey), chunk.reachesNewest else { return false }
+            let waiting = try database.first(
+                "SELECT 1 FROM record WHERE chat = ? AND chunk = ? AND provisional = 1 AND relates IS NULL LIMIT 1", [.text(chatKey), .int(chunk.id)], map: { _ in true },
+            ) ?? false
+            guard !waiting else { return false }
             let epoch = epochString(accountId: Self.accountId(of: chatKey))
             if let latestMessageId {
                 guard let stored = try database.first(
@@ -878,6 +883,13 @@ public final class ChatStore: @unchecked Sendable {
             ).filter { !ids.contains($0) }
             for id in provisional {
                 try database.run("DELETE FROM record WHERE chat = ? AND id = ?", [.text(chat), .text(id)])
+            }
+            // Older than a newest page reaches, in the history it joins, a pushed message can't be confirmed by
+            // fetching again, and waiting would fetch on every open: it's the network's own message, so it stays.
+            if case .newest = request {
+                try database.run(
+                    "UPDATE record SET provisional = 0 WHERE chat = ? AND chunk = ? AND provisional = 1 AND sort < ?", [.text(chat), .int(target), .int(covered.lowerBound)],
+                )
             }
         }
         // Messages the page covers but doesn't hold were deleted.

@@ -211,6 +211,34 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertNil(try store.record(id: "99", chatKey: chat), "nothing is newer than a newest page")
     }
 
+    /// Newer messages from the network can be stored around a pushed one that only the push brought (observed
+    /// 2026-11-22: two of three pushed messages stored live, the third left provisional). The row's latest message is
+    /// then stored, and counting the chat current left the pushed one unconfirmed for good, since nothing fetched.
+    func testAProvisionalMessageUnderNewerStoredOnesKeepsTheChatFetchingUntilAPageConfirmsIt() throws {
+        try store.apply(page(1 ... 3), for: .newest, chatKey: chat)
+        try store.writeProvisional([record(4, text: "pushed")], chatKey: chat)
+        try store.write([record(5), record(6)], chatKey: chat)
+        XCTAssertEqual(try newestIds(), ["1", "2", "3", "4", "5", "6"])
+        XCTAssertFalse(try store.isCurrent(chatKey: chat, latestMessageId: "6"), "it waits for the network's copy")
+        XCTAssertFalse(try store.isCurrent(chatKey: chat, latestMessageId: nil))
+
+        try store.apply(page(3 ... 6), for: .newest, chatKey: chat)
+        XCTAssertEqual(try store.record(id: "4", chatKey: chat)?.data, Data("4".utf8), "the network's copy replaces it")
+        XCTAssertTrue(try store.isCurrent(chatKey: chat, latestMessageId: "6"))
+    }
+
+    /// A newest page that doesn't reach back to a pushed message in the history it joins can't confirm it, and
+    /// leaving it waiting would fetch again on every open: it's the network's own message, so it stays as stored.
+    func testANewestPageAcceptsPushedMessagesOlderThanItReaches() throws {
+        try store.apply(page(1 ... 3), for: .newest, chatKey: chat)
+        try store.writeProvisional([record(4, text: "pushed")], chatKey: chat)
+        try store.write((5 ... 10).map { record($0) }, chatKey: chat)
+        try store.apply(page(8 ... 12), for: .newest, chatKey: chat)
+        XCTAssertEqual(try store.record(id: "4", chatKey: chat)?.data, Data("pushed".utf8))
+        XCTAssertEqual(try newestIds(), (1 ... 12).map(String.init))
+        XCTAssertTrue(try store.isCurrent(chatKey: chat, latestMessageId: "12"))
+    }
+
     /// Two stores on one file stand in for the app and its extension.
     @MainActor
     func testOnlyAnotherProcessesWritesReloadEveryChat() async throws {
