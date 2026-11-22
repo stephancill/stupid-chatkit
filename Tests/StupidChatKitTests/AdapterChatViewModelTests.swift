@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 @testable import StupidChatKit
 import XCTest
@@ -108,6 +109,58 @@ final class AdapterChatViewModelTests: XCTestCase {
         XCTAssertEqual(chat.messages.map(\.id), ["1", "2", "3"], "opens with the stored messages")
         XCTAssertEqual(chat.firstUnreadMessageId, "2")
         XCTAssertEqual(chat.unreadCount, 2)
+    }
+
+    /// The view applies each change as it's published, so a divider set after the messages a fetch brings reached the
+    /// screen as a second move, after the list had followed the bottom to them.
+    func testTheDividerArrivesWithTheUnreadMessagesAFetchBrings() async {
+        let adapter = FakeAdapter()
+        adapter.readUpTo = 2
+        adapter.pages = [[message(1), message(2)]]
+        let first = makeChat(adapter)
+        await first.connect()
+        first.disconnect()
+
+        let reopened = FakeAdapter()
+        reopened.pages = [[message(2), message(3), message(4)]]
+        let chat = makeChat(reopened)
+        chat.latestMessageId = "4"
+        XCTAssertNil(chat.firstUnreadMessageId, "the stored messages are read")
+        var shown: [String] = []
+        let observation = chat.$messages.dropFirst().sink { [unowned chat] messages in
+            shown.append("\(messages.map(\.id).joined(separator: ",")) divider \(chat.firstUnreadMessageId ?? "-")")
+        }
+        await chat.connect()
+        XCTAssertEqual(shown, ["1,2,3,4 divider 3"])
+        observation.cancel()
+        chat.disconnect()
+    }
+
+    /// A push's message shows after the stored ones with the divider above it; the fetch brings the unread messages
+    /// before it, which the divider moves up to in the same update.
+    func testTheDividerMovesUpToUnreadMessagesAFetchBringsBeforeAPushedOne() async throws {
+        let adapter = FakeAdapter()
+        adapter.readUpTo = 2
+        adapter.pages = [[message(1), message(2)]]
+        let first = makeChat(adapter)
+        await first.connect()
+        first.disconnect()
+
+        let reopened = FakeAdapter()
+        reopened.pages = [[message(2), message(3), message(4)]]
+        try store.writeProvisional([reopened.record(message(4))], chatKey: "test|fake:1")
+        let chat = makeChat(reopened)
+        XCTAssertEqual(chat.messages.map(\.id), ["1", "2", "4"])
+        XCTAssertEqual(chat.firstUnreadMessageId, "4")
+        var shown: [String] = []
+        let observation = chat.$messages.dropFirst().sink { [unowned chat] messages in
+            shown.append("\(messages.map(\.id).joined(separator: ",")) divider \(chat.firstUnreadMessageId ?? "-")")
+        }
+        await chat.connect()
+        XCTAssertEqual(shown.last, "1,2,3,4 divider 3")
+        XCTAssertFalse(shown.contains { $0.hasPrefix("1,2,3,4 divider 4") }, "never the new messages under the old divider")
+        observation.cancel()
+        chat.disconnect()
     }
 
     func testAChatWhoseStoredMessagesAreCurrentFetchesNothing() async {

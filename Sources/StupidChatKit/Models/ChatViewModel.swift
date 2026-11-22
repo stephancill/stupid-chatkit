@@ -922,6 +922,19 @@ public class ChatViewModel: ObservableObject {
         }
     }
 
+    /// While the chat opens (from its stored messages until it has connected), the divider follows what history is
+    /// about to show: placed when there is none or its message went, and moved up to an unread message before it,
+    /// such as those a fetch brings under a message a push stored. Never down, so reading doesn't move it.
+    var dividerFollowsHistory = false
+
+    private func moveUnreadDivider(for newHistory: [ChatMessage]) {
+        guard dividerFollowsHistory, let first = newHistory.firstIndex(where: isUnread) else { return }
+        if let current = firstUnreadMessageId, let index = newHistory.firstIndex(where: { $0.id == current }), index <= first {
+            return
+        }
+        firstUnreadMessageId = newHistory[first].id
+    }
+
     /// After a failed mark, how long to wait before each retry; once they run out, the next read sends it again.
     var readMarkerRetryDelays: [Duration] = [.seconds(3), .seconds(15)]
 
@@ -1288,7 +1301,7 @@ public class ChatViewModel: ObservableObject {
     }
 
     /// Sets reactions before the messages they belong to, so new bubbles render with their reactions instead of
-    /// growing a moment later.
+    /// growing a moment later, and the divider before the messages that move it, so the list moves once.
     func publish(history newHistory: [ChatMessage], reactions newReactions: [String: [ChatReaction]]) {
         publishedHistory = newHistory
         if reactions != newReactions {
@@ -1296,6 +1309,7 @@ public class ChatViewModel: ObservableObject {
         }
         let resolved = resolvingLinks(newHistory)
         if history != resolved {
+            moveUnreadDivider(for: resolved)
             history = resolved
         }
     }

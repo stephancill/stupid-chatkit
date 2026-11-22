@@ -561,6 +561,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
         guard !isPrepared else { return }
         isPrepared = true
         storeObservation = store.observe(chatKey: chatKey) { [weak self] in self?.reloadWindow() }
+        dividerFollowsHistory = true
         openAtFirstUnread()
         restoreOutbox()
         // In the first render, rather than appearing once history arrives.
@@ -603,6 +604,7 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
                 firstUnreadMessageId = nil
             }
             placeUnreadDivider()
+            dividerFollowsHistory = false
             saveState()
             isOpen = true
             if !reportsSummary {

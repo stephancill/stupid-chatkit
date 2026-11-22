@@ -915,11 +915,20 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
         messageIdByKey = Dictionary(messages.map { (itemKey(for: $0.id), $0.id) }, uniquingKeysWith: { _, latest in latest })
         let items = messages.map { Item.message(itemKey(for: $0.id)) }
-        let firstUnreadKey = firstUnreadId.map(itemKey(for:))
+        let previousDividerItem = previousItems.firstIndex(of: .unreadDivider).flatMap { $0 + 1 < previousItems.count ? previousItems[$0 + 1] : nil }
+        // The view model moves the divider just before the messages that move it, so for that one update it can name a
+        // message not shown yet: it stays where it was rather than going and coming back.
+        let dividerItem: Item? = if let key = firstUnreadId.map(itemKey(for:)), messageIdByKey[key] != nil {
+            .message(key)
+        } else if firstUnreadId != nil, let previousDividerItem, items.contains(previousDividerItem) {
+            previousDividerItem
+        } else {
+            nil
+        }
         var rows: [Item] = []
         for (day, dayMessages) in Self.days(of: messages) {
             var dayRows = dayMessages.map { Item.message(itemKey(for: $0.id)) }
-            if let firstUnreadKey, let index = dayRows.firstIndex(of: .message(firstUnreadKey)) {
+            if let dividerItem, let index = dayRows.firstIndex(of: dividerItem) {
                 dayRows.insert(.unreadDivider, at: index)
             }
             snapshot.appendSections([.day(day)])
@@ -953,8 +962,12 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         let prepended = !wasEmpty && newFirst != previousFirst && previousLast == items.last
         let distanceFromBottom = collectionView.contentSize.height - collectionView.contentOffset.y
         let wasAtBottom = isPinnedToBottom
-        // The divider can appear after the cached messages first render, once history shows newer unread.
+        // The divider can appear after the cached messages first render, once history shows newer unread, and move up
+        // to unread messages a fetch brings before it.
         let dividerAppeared = rows.contains(.unreadDivider) && !previousItems.contains(.unreadDivider)
+            || dividerItem != nil && previousDividerItem != nil && dividerItem != previousDividerItem
+        // Messages after the last one shown slide in; anything else (a fetch filling in before the newest) is placed.
+        let appendedOnly = items.count > previousIds.count && Array(items.prefix(previousIds.count)) == previousIds
         // The newest message the composer just sent, flying from the send button when the list follows the bottom.
         var flight: (key: String, origin: CGRect)?
         if let origin = sendFlightOrigin,
@@ -980,12 +993,14 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             hasScrolledInitially = true
         } else if !hasScrolledInitially, !items.isEmpty {
             performInitialScrollIfNeeded()
+        } else if isAnchoredToDivider {
+            // Before `prepended`: earlier history inserted above starts at estimated heights, so keeping the distance
+            // from the bottom moved the divider down and back once they were measured.
+            scrollToDivider()
         } else if prepended {
             // Keep the visible messages in place when earlier history is inserted above them.
             collectionView.layoutIfNeeded()
             collectionView.contentOffset.y = collectionView.contentSize.height - distanceFromBottom
-        } else if isAnchoredToDivider {
-            scrollToDivider()
         } else if dividerAppeared, !userHasScrolled {
             // Move to it in the same pass. Following the bottom first would animate past the new messages.
             isPinnedToBottom = false
@@ -995,7 +1010,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             // At the bottom, new messages and cells that grew push the list up rather than under the input. A sent
             // message replacing its "sending" copy adds nothing: its new cell starts at an estimated height, so the
             // list settles at the bottom before it draws, rather than jumping and sliding back.
-            scrollToBottom(animated: items.count > previousIds.count)
+            scrollToBottom(animated: appendedOnly)
         } else if let anchor {
             keepOnScreen(anchor)
         }
