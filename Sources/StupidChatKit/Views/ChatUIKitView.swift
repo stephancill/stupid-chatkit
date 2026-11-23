@@ -2980,28 +2980,34 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     /// The emoji matching a `:` word, in a row that scrolls sideways; tapping one inserts it, or a custom emoji's key.
     private func emojiStrip(for emojis: [ChatEmojiSuggestion]) -> UIView {
         let row = UIStackView()
-        row.spacing = 4
         row.alignment = .center
         row.isLayoutMarginsRelativeArrangement = true
-        row.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
+        row.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6)
         for emoji in emojis {
-            var configuration = UIButton.Configuration.plain()
+            let button = UIButton(type: .custom, primaryAction: UIAction { [weak self] _ in
+                self?.insertSuggestion(emoji.text)
+            })
+            // A fixed cell per emoji, so the strip never relies on the button's own size for an emoji (they
+            // overlapped on a Mac).
+            var width: CGFloat = 44
             switch emoji {
             case let .custom(custom):
-                configuration.image = ChatCustomEmojiImages.shared.image(for: custom, height: 32) { [weak self] in
+                let image = ChatCustomEmojiImages.shared.image(for: custom, height: 32) { [weak self] in
                     // Rebuilt with the image once it loads.
                     self?.shownSuggestionIds = []
                     self?.updateMentionSuggestions()
                 }
+                button.setImage(image, for: .normal)
+                width = max(width, image.size.width + 12)
             case let .unicode(character, _):
-                var title = AttributedString(character)
-                title.font = UIFont.systemFont(ofSize: 28)
-                configuration.attributedTitle = title
+                button.setTitle(character, for: .normal)
+                button.titleLabel?.font = .systemFont(ofSize: 28)
             }
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
-            let button = UIButton(configuration: configuration, primaryAction: UIAction { [weak self] _ in
-                self?.insertSuggestion(emoji.text)
-            })
+            button.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: width),
+                button.heightAnchor.constraint(equalToConstant: 44),
+            ])
             button.accessibilityLabel = emoji.label
             // Long press shows the key or name, as the strip has no room for them.
             button.toolTip = emoji.label
