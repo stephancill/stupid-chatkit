@@ -3235,6 +3235,12 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         let item = Item.message(itemKey(for: id))
         guard snapshot.itemIdentifiers.contains(item) else { return }
         snapshot.reconfigureItems([item])
+        // Transcribing is the user's own doing, like a scroll: the list stops holding the divider, which would leave
+        // a grown bubble under the composer, and follows the bottom when it's there.
+        if isAnchoredToDivider, hasScrolledInitially {
+            isAnchoredToDivider = false
+            isPinnedToBottom = isNearBottom
+        }
         guard hasScrolledInitially, !isAnchoredToDivider, view.window != nil else {
             applyKeepingBottom(snapshot)
             return
