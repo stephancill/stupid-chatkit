@@ -3099,6 +3099,14 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         replyPreview.isLayoutMarginsRelativeArrangement = true
         replyPreview.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6, leading: 0, bottom: 0, trailing: 4)
         replyPreview.isHidden = true
+        // Tapping a reply or an edit scrolls to its message, which may be far back; a forward's is in another chat.
+        labels.isUserInteractionEnabled = true
+        labels.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(replyPreviewTapped)))
+    }
+
+    @objc private func replyPreviewTapped() {
+        guard forwarding == nil, editingMessage != nil || replyingTo != nil else { return }
+        Task { await viewModel.showComposerReference() }
     }
 
     private func presentReminderDatePicker(for message: ChatMessage, in reminders: any ChatReminders) {
