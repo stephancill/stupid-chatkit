@@ -1490,6 +1490,12 @@ public class ChatViewModel: ObservableObject {
         replyingTo = nil
     }
 
+    /// Scrolls to the message the composer is replying to or editing, however far back it is.
+    public func showComposerReference() async {
+        guard let id = (editingMessage ?? replyingTo)?.id else { return }
+        await jump(to: id)
+    }
+
     public func mentionSuggestions(for _: String) -> [ChatUser] {
         []
     }

@@ -552,6 +552,21 @@ final class AdapterChatViewModelTests: XCTestCase {
         chat.disconnect()
     }
 
+    func testTappingTheComposerReplyShowsTheRepliedMessage() async {
+        let adapter = FakeWindowingAdapter()
+        adapter.pages = [[message(50)]]
+        let chat = makeChat(adapter)
+        await chat.connect()
+        await chat.showComposerReference()
+        XCTAssertNil(chat.jumpTarget, "nothing to show without a reply")
+        chat.startReply(to: message(10))
+        await chat.showComposerReference()
+        XCTAssertEqual(chat.jumpTarget, "10")
+        XCTAssertTrue(chat.hasLaterMessages, "a reply far back shows a window around it")
+        XCTAssertEqual(chat.replyingTo?.id, "10", "the reply stays in the composer")
+        chat.disconnect()
+    }
+
     func testReferencedMessagesComeFromTheAdapter() async {
         let adapter = FakeLiveAdapter()
         adapter.pages = [[message(1)]]
