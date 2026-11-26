@@ -1151,7 +1151,11 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
         isAnchoredToDivider = false
         collectionView.layoutIfNeeded()
         isAnimatingJump = true
-        collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: true)
+        // A message taller than the space between the bars (an album with the keyboard up) shows from its top, so
+        // its name and start are on screen rather than its middle, with the caption under the composer.
+        let visibleHeight = collectionView.bounds.height - collectionView.adjustedContentInset.top - collectionView.adjustedContentInset.bottom
+        let isTall = (collectionView.layoutAttributesForItem(at: indexPath)?.frame.height ?? 0) > visibleHeight
+        collectionView.scrollToItem(at: indexPath, at: isTall ? .top : .centeredVertically, animated: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             (self?.collectionView.cellForItem(at: indexPath) as? ChatMessageCell)?.flash()
         }
