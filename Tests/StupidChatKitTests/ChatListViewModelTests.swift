@@ -356,10 +356,38 @@ final class ChatListViewModelTests: XCTestCase {
         ChatViewModel(network: .telegram, chatKey: "telegram|t", title: "t", subtitle: "", canReply: true, draftStore: ChatDraftStore(defaults: UserDefaults(suiteName: "ChatListViewModelTests-\(UUID().uuidString)")!))
     }
 
-    private func makeList(_ providers: [(FakeProvider, String?)]) -> ChatListViewModel {
+    func testTheAppsArchiveFilesItsChatsUnderTheArchiveAcrossLoads() async {
+        let archive = FakeLocalArchive()
+        archive.archived = ["spotify|s1"]
+        let spotify = FakeProvider(network: .spotify, page: .init(chats: [row("s1", .spotify, minutesAgo: 1), row("s2", .spotify, minutesAgo: 2)], archived: []))
+        let telegram = FakeProvider(network: .telegram, page: .init(chats: [row("t", .telegram, minutesAgo: 3)], archived: [row("ta", .telegram, minutesAgo: 4)]))
+        let list = makeList([(spotify, "spotify"), (telegram, "telegram")], localArchive: archive)
+        await list.load()
+        XCTAssertEqual(list.chats.map(\.id), ["spotify|s2", "telegram|t"])
+        XCTAssertEqual(list.archivedChats.map(\.id), ["spotify|s1", "telegram|ta"], "beside the network's own archive")
+
+        list.updateChats([row("s1", .spotify, minutesAgo: 0)], accountId: "spotify")
+        XCTAssertEqual(list.chats.map(\.id), ["spotify|s2", "telegram|t"], "a new message keeps the chat archived")
+        XCTAssertEqual(list.archivedChats.map(\.id), ["spotify|s1", "telegram|ta"])
+
+        let relaunched = makeList([(spotify, "spotify"), (telegram, "telegram")], localArchive: archive)
+        XCTAssertEqual(relaunched.archivedChats.map(\.id), ["spotify|s1", "telegram|ta"], "the cached list keeps it archived")
+
+        archive.changeRemotely(archived: true, chatId: "spotify|s2")
+        archive.changeRemotely(archived: false, chatId: "spotify|s1")
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(list.chats.map(\.id), ["spotify|s1", "telegram|t"], "another device's changes move rows both ways")
+        XCTAssertEqual(list.archivedChats.map(\.id), ["spotify|s2", "telegram|ta"])
+
+        await list.load()
+        XCTAssertEqual(list.chats.map(\.id), ["spotify|s1", "telegram|t"])
+        XCTAssertEqual(list.archivedChats.map(\.id), ["spotify|s2", "telegram|ta"])
+    }
+
+    private func makeList(_ providers: [(FakeProvider, String?)], localArchive: (any ChatLocalArchive)? = nil) -> ChatListViewModel {
         ChatListViewModel(sources: {
             providers.map { ChatListSource(provider: $0.0, accountId: $0.1, label: $0.0.chatNetwork.rawValue) }
-        }, caches: caches)
+        }, caches: caches, localArchive: localArchive)
     }
 
     private func row(_ id: String, _ network: ChatNetwork, minutesAgo: Double, destination: TestDestination? = nil) -> ChatSummary {

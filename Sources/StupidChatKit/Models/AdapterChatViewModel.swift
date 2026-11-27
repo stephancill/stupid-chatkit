@@ -209,7 +209,8 @@ public extension ChatMuting {
 }
 
 /// Archiving the chat on its network, which moves it from the Chats list to the archive. Whether it is archived
-/// comes from which of the two its row is in.
+/// comes from which of the two its row is in. A chat whose adapter doesn't adopt it is archived in the app's
+/// archive instead, when the Chats list has one (`ChatLocalArchive`).
 @MainActor
 public protocol ChatArchiving: ChatAdapter {
     /// Whether this chat can be archived; `true` unless implemented.
@@ -1154,7 +1155,11 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     }
 
     override public var canArchive: Bool {
-        isArchived != nil && (adapter as? any ChatArchiving)?.canArchive == true
+        guard isArchived != nil else { return false }
+        if let archiving = adapter as? any ChatArchiving {
+            return archiving.canArchive
+        }
+        return archivesLocally != nil
     }
 
     override public func setMuted(_ muted: Bool) async throws {
@@ -1165,8 +1170,12 @@ public final class AdapterChatViewModel<Adapter: ChatAdapter>: ChatViewModel {
     }
 
     override public func setArchived(_ archived: Bool) async throws {
-        guard canArchive, let archiving = adapter as? any ChatArchiving else { return }
-        try await archiving.setArchived(archived)
+        guard canArchive else { return }
+        if let archiving = adapter as? any ChatArchiving {
+            try await archiving.setArchived(archived)
+        } else {
+            archivesLocally?(archived)
+        }
         isArchived = archived
         rowSettingsDidChange?(nil, archived)
     }

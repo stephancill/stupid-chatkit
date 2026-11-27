@@ -89,6 +89,18 @@ public protocol ChatReminders {
     func schedule(_ message: ChatMessage, dueDate: Date, delay: ChatReminderDelay?) async throws
 }
 
+/// The app's own archive, for chats whose network has none (adapters without `ChatArchiving`), such as one kept
+/// in sync across the user's devices. Given to `ChatListViewModel`, which files the chats it holds under the
+/// archive and offers Archive in those chats (`ChatViewModel.canArchive`).
+@MainActor
+public protocol ChatLocalArchive: AnyObject {
+    /// Posted when which chats are archived changes, such as from another device.
+    var didChange: Notification.Name { get }
+    /// Whether the user archived the chat, by its row's id (`ChatSummary.id`).
+    func isArchived(_ chatId: String) -> Bool
+    func setArchived(_ archived: Bool, chatId: String)
+}
+
 /// The presets a message's "Remind Me" offers.
 public enum ChatReminderDelay: CaseIterable, Sendable {
     case fiveMinutes, thirtyMinutes, oneHour, threeHours, tomorrow
