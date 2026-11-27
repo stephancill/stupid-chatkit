@@ -93,8 +93,9 @@ public enum EmojiCatalog {
     }
 }
 
-/// The grid a message's reactions expand into: the chat's custom emoji, then every emoji by category, or for a
-/// network that takes only some emoji, just those; searching narrows both into one section.
+/// The grid a message's reactions expand into: a row of the user's recent reactions this chat takes, the chat's
+/// custom emoji, then every emoji by category, or for a network that takes only some emoji, just those; searching
+/// narrows both into one section.
 public enum ChatReactionGrid {
     public enum Item: Hashable, Sendable {
         case custom(ChatCustomEmoji)
@@ -114,7 +115,10 @@ public enum ChatReactionGrid {
         public let items: [Item]
     }
 
-    public static func sections(customEmojis: [String: ChatCustomEmoji], choices: [String]?, query: String) -> [Section] {
+    /// One row of the grid.
+    static let recentCount = 8
+
+    public static func sections(customEmojis: [String: ChatCustomEmoji], choices: [String]?, recent: [String] = [], query: String) -> [Section] {
         let query = query.trimmingCharacters(in: .whitespaces)
         guard query.isEmpty else {
             let custom = ChatCustomEmoji.suggestions(for: query, in: customEmojis, limit: .max).map(Item.custom)
@@ -123,6 +127,8 @@ public enum ChatReactionGrid {
             let items = custom + emoji.map(Item.emoji)
             return items.isEmpty ? [] : [Section(title: "Results", items: items)]
         }
+        let recents = recentItems(recent, customEmojis: customEmojis, choices: choices)
+        let recentSection = recents.isEmpty ? [] : [Section(title: "Recently Used", items: recents)]
         let offered = customEmojis.values.filter { !$0.isHidden }
         let byCategory = Dictionary(grouping: offered) { $0.category ?? "" }
         // Uncategorized custom emoji first under the generic title, then categories alphabetically.
@@ -136,10 +142,30 @@ public enum ChatReactionGrid {
             )
         }
         if let choices {
-            return custom + (choices.isEmpty ? [] : [Section(title: "Reactions", items: choices.map(Item.emoji))])
+            return recentSection + custom + (choices.isEmpty ? [] : [Section(title: "Reactions", items: choices.map(Item.emoji))])
         }
-        return custom + EmojiCatalog.categories.map { Section(title: $0.title, items: $0.entries.map { .emoji($0.emoji) }) }
+        return recentSection + custom + EmojiCatalog.categories.map { Section(title: $0.title, items: $0.entries.map { .emoji($0.emoji) }) }
     }
+
+    /// Each as this chat offers it: a custom emoji it has, the network's spelling of a choice, or the catalog's
+    /// spelling where it takes any emoji. Custom emoji from other chats and emoji it doesn't take are left out.
+    private static func recentItems(_ keys: [String], customEmojis: [String: ChatCustomEmoji], choices: [String]?) -> [Item] {
+        let items = keys.compactMap { key -> Item? in
+            if let custom = customEmojis[key] {
+                return custom.isHidden ? nil : .custom(custom)
+            }
+            if let choices {
+                return choices.first { bare($0) == bare(key) }.map(Item.emoji)
+            }
+            return catalogByBare[bare(key)].map(Item.emoji)
+        }
+        return Array(items.prefix(recentCount))
+    }
+
+    private static let catalogByBare: [String: String] = Dictionary(
+        EmojiCatalog.categories.flatMap(\.entries).map { (bare($0.emoji), $0.emoji) },
+        uniquingKeysWith: { first, _ in first },
+    )
 
     /// Without variation selectors, so Telegram's ❤ matches the catalog's ❤️.
     private static func bare(_ emoji: String) -> String {
