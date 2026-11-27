@@ -198,8 +198,8 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     public typealias Summary = ChatSummary<Destination>
 
     @Published public private(set) var chats: [Summary] = []
-    /// Chats the user archived on their network (Telegram's Archive folder, archived X chats), shown apart from
-    /// `chats`.
+    /// Chats the user archived on their network (Telegram's Archive folder, archived X chats), or in the app's
+    /// archive (`localArchive`) for a network without one, shown apart from `chats`.
     @Published public private(set) var archivedChats: [Summary] = []
     @Published public private(set) var isLoading = false
     @Published public private(set) var hasLoaded = false
@@ -293,14 +293,22 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     /// The last loaded list, shown at launch while it refreshes, so only the very first load waits.
     private let cacheURL: URL
     private let archiveCacheURL: URL
+    /// The app's archive, for chats whose network has none: their rows are filed under `archivedChats`.
+    private let localArchive: (any ChatLocalArchive)?
+    /// Rows in `archivedChats` because of `localArchive`, which go back to `chats` once it no longer has them,
+    /// such as when the user unarchives one on another device.
+    private var locallyArchivedRows: Set<String> = []
+    private nonisolated(unsafe) var localArchiveObserver: (any NSObjectProtocol)?
 
     public init(
         sources: @escaping () -> [ChatListSource<Destination>],
         caches: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0],
         store: @escaping () -> ChatStore = { ChatKit.store },
+        localArchive: (any ChatLocalArchive)? = nil,
     ) {
         self.sources = sources
         self.store = store
+        self.localArchive = localArchive
         cacheURL = caches.appending(path: "chat-list.json")
         archiveCacheURL = caches.appending(path: "chat-list-archived.json")
         if let data = try? Data(contentsOf: cacheURL), let cached = try? JSONDecoder().decode([Summary].self, from: data) {
@@ -310,6 +318,12 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         if let data = try? Data(contentsOf: archiveCacheURL), let cached = try? JSONDecoder().decode([Summary].self, from: data) {
             archivedChats = cached
         }
+        if let localArchive {
+            locallyArchivedRows = Set(archivedChats.map(\.id).filter { localArchive.isArchived($0) })
+            localArchiveObserver = NotificationCenter.default.addObserver(forName: localArchive.didChange, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.setLists() }
+            }
+        }
         staleRows = Set((chats + archivedChats).map(\.id))
         backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.appDidEnterBackground() }
@@ -318,6 +332,7 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
 
     deinit {
         backgroundObserver.map(NotificationCenter.default.removeObserver)
+        localArchiveObserver.map(NotificationCenter.default.removeObserver)
     }
 
     /// Live connections stop in the background, so every account may miss messages from here: stored chats stop
@@ -409,8 +424,7 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         }
         connections = statuses
         followedRows = followedRows.filter { $0.value.update > startedAfter }
-        setChats(merged.map(keepingFollowedState))
-        setArchivedChats(archived.map(keepingFollowedState))
+        setLists(chats: merged.map(keepingFollowedState), archived: archived.map(keepingFollowedState))
         if staleCount == staleCountAtStart {
             rowsRebuilt(rebuilt)
         }
@@ -452,6 +466,11 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         viewModel.rowSettingsDidChange = { [weak self] muted, archived in
             self?.updateChat(id: chatId, muted: muted, archived: archived)
         }
+        if let localArchive {
+            viewModel.archivesLocally = { [weak localArchive] archived in
+                localArchive?.setArchived(archived, chatId: chatId)
+            }
+        }
         viewModel.summaryDidChange = { [weak self] latest, body, unreadCount, unseenReactionCount in
             guard let self else { return }
             followedUpdateCount += 1
@@ -480,6 +499,11 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     /// A row the user muted or archived from its chat, changed at once rather than on the next load, which the
     /// network's own answer then confirms.
     private func updateChat(id: String, muted: Bool?, archived: Bool?) {
+        // A chat unarchived on its network leaves the app's archive too, which may still hold it from before its
+        // network had one.
+        if archived == false, let localArchive, localArchive.isArchived(id) {
+            localArchive.setArchived(false, chatId: id)
+        }
         let isArchived = archivedChats.contains { $0.id == id }
         guard var chat = (isArchived ? archivedChats : chats).first(where: { $0.id == id }) else { return }
         if let muted {
@@ -489,11 +513,10 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
         if archived ?? isArchived == isArchived {
             isArchived ? setArchivedChats(remaining + [chat]) : setChats(remaining + [chat])
         } else if isArchived {
-            setArchivedChats(remaining)
-            setChats(chats + [chat])
+            locallyArchivedRows.remove(id)
+            setLists(chats: chats + [chat], archived: remaining)
         } else {
-            setChats(remaining)
-            setArchivedChats(archivedChats + [chat])
+            setLists(chats: remaining, archived: archivedChats + [chat])
         }
     }
 
@@ -550,19 +573,49 @@ public final class ChatListViewModel<Destination: Hashable & Codable & Sendable>
     }
 
     private func setChats(_ summaries: [Summary]) {
-        chats = summaries.sorted { ($0.timestamp ?? .distantPast) > ($1.timestamp ?? .distantPast) }
-        hasLoaded = true
-        schedulePrefetch()
-        preloadLinks(in: chats)
-        if let data = try? JSONEncoder().encode(chats) {
-            try? data.write(to: cacheURL, options: .atomic)
-        }
+        setLists(chats: summaries)
     }
 
     private func setArchivedChats(_ summaries: [Summary]) {
-        archivedChats = summaries.sorted { ($0.timestamp ?? .distantPast) > ($1.timestamp ?? .distantPast) }
-        if let data = try? JSONEncoder().encode(archivedChats) {
-            try? data.write(to: archiveCacheURL, options: .atomic)
+        setLists(archived: summaries)
+    }
+
+    /// Sets either list or both (`nil` keeps it), filing the rows `localArchive` holds under the archive and
+    /// moving back those it no longer does. A row in both lists is the main list's: a network whose archive didn't
+    /// load keeps its previous archived rows, one of which may be back in the list.
+    private func setLists(chats newChats: [Summary]? = nil, archived newArchived: [Summary]? = nil) {
+        var main = newChats ?? chats
+        var archived = newArchived ?? archivedChats
+        if let localArchive {
+            let unarchived = archived.filter { locallyArchivedRows.contains($0.id) && !localArchive.isArchived($0.id) }
+            let mainIds = Set(main.map(\.id))
+            main += unarchived.filter { !mainIds.contains($0.id) }
+            let filed = main.filter { localArchive.isArchived($0.id) }
+            let filedIds = Set(filed.map(\.id))
+            main.removeAll { filedIds.contains($0.id) }
+            let unarchivedIds = Set(unarchived.map(\.id))
+            archived = archived.filter { !filedIds.contains($0.id) && !unarchivedIds.contains($0.id) } + filed
+            locallyArchivedRows = Set(archived.map(\.id).filter { localArchive.isArchived($0) })
+        }
+        let mainIds = Set(main.map(\.id))
+        archived.removeAll { mainIds.contains($0.id) }
+        let byNewest = { (lhs: Summary, rhs: Summary) in (lhs.timestamp ?? .distantPast) > (rhs.timestamp ?? .distantPast) }
+        main.sort(by: byNewest)
+        archived.sort(by: byNewest)
+        if newChats != nil || main != chats {
+            chats = main
+            hasLoaded = true
+            schedulePrefetch()
+            preloadLinks(in: chats)
+            if let data = try? JSONEncoder().encode(chats) {
+                try? data.write(to: cacheURL, options: .atomic)
+            }
+        }
+        if newArchived != nil || archived != archivedChats {
+            archivedChats = archived
+            if let data = try? JSONEncoder().encode(archivedChats) {
+                try? data.write(to: archiveCacheURL, options: .atomic)
+            }
         }
     }
 

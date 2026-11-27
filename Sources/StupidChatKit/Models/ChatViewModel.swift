@@ -760,6 +760,9 @@ public class ChatViewModel: ObservableObject {
     @Published public internal(set) var isArchived: Bool?
     /// A mute or archive the network accepted, for the chat's row; `nil` for what didn't change.
     var rowSettingsDidChange: ((_ muted: Bool?, _ archived: Bool?) -> Void)?
+    /// Archives or unarchives the chat in the app's archive (`ChatLocalArchive`), for a network without its own;
+    /// `nil` when the Chats list has no such archive.
+    var archivesLocally: ((_ archived: Bool) -> Void)?
     private var messagesById: [String: ChatMessage] = [:]
     private var renderedTextCache: [String: AttributedString] = [:]
     private let draftStore: ChatDraftStore
@@ -1265,7 +1268,8 @@ public class ChatViewModel: ObservableObject {
         false
     }
 
-    /// Whether the chat can be archived and unarchived on its network (`ChatArchiving`), once its row says which it is.
+    /// Whether the chat can be archived and unarchived, once its row says which it is: on its network
+    /// (`ChatArchiving`), else in the app's archive (`ChatLocalArchive`).
     public var canArchive: Bool {
         false
     }
@@ -1273,7 +1277,8 @@ public class ChatViewModel: ObservableObject {
     /// Mutes or unmutes the chat on its network, then its row; throws what the network answered.
     public func setMuted(_: Bool) async throws {}
 
-    /// Archives or unarchives the chat on its network, moving its row; throws what the network answered.
+    /// Archives or unarchives the chat on its network, or in the app's archive for a network without one, moving
+    /// its row; throws what the network answered.
     public func setArchived(_: Bool) async throws {}
 
     // MARK: Buttons

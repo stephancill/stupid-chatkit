@@ -1134,6 +1134,48 @@ final class AdapterChatViewModelTests: XCTestCase {
         XCTAssertEqual(list.archivedChats.map(\.id), [])
     }
 
+    func testChatsWhoseNetworkHasNoArchiveArchiveInTheAppsOwn() async throws {
+        let row = ChatSummary<String>(id: "fake:1", network: .telegram, title: "Fake", avatarURL: nil, preview: nil, timestamp: Date(), unreadCount: 0, destination: "fake")
+        let archive = FakeLocalArchive()
+        let list = ChatListViewModel<String>(sources: { [ChatListSource(provider: RowsProvider(chats: [row]), accountId: "test", label: "Test")] }, caches: directory, localArchive: archive)
+        await list.load()
+        let chat = makeChat(FakeAdapter())
+        _ = list.follow(chat, chatId: "test|fake:1")
+        XCTAssertTrue(chat.canArchive)
+        XCTAssertFalse(chat.canMute, "only archiving has the app's own")
+
+        try await chat.setArchived(true)
+        XCTAssertEqual(archive.archived, ["test|fake:1"])
+        XCTAssertEqual(chat.isArchived, true)
+        XCTAssertEqual(list.chats.map(\.id), [])
+        XCTAssertEqual(list.archivedChats.map(\.id), ["test|fake:1"])
+
+        await list.load()
+        XCTAssertEqual(list.archivedChats.map(\.id), ["test|fake:1"], "the network lists it, the app's archive keeps it there")
+
+        try await chat.setArchived(false)
+        XCTAssertEqual(archive.archived, [])
+        XCTAssertEqual(list.chats.map(\.id), ["test|fake:1"])
+        XCTAssertEqual(list.archivedChats.map(\.id), [])
+    }
+
+    func testChatsArchivedOnTheirNetworkStayOutOfTheAppsArchive() async throws {
+        let row = ChatSummary<String>(id: "fake:1", network: .telegram, title: "Fake", avatarURL: nil, preview: nil, timestamp: Date(), unreadCount: 0, destination: "fake")
+        let archive = FakeLocalArchive()
+        archive.archived = ["test|fake:1"]
+        let list = ChatListViewModel<String>(sources: { [ChatListSource(provider: RowsProvider(chats: [row]), accountId: "test", label: "Test")] }, caches: directory, localArchive: archive)
+        await list.load()
+        let adapter = FakeSettingsAdapter()
+        let chat = makeChat(adapter)
+        _ = list.follow(chat, chatId: "test|fake:1")
+        XCTAssertEqual(chat.isArchived, true)
+
+        try await chat.setArchived(false)
+        XCTAssertEqual(adapter.archives, [false], "the network's archive is used when it has one")
+        XCTAssertEqual(archive.archived, [], "and the app's lets the chat go")
+        XCTAssertEqual(list.chats.map(\.id), ["test|fake:1"])
+    }
+
     func testChatsWithoutMutingOrArchivingOfferNeither() async {
         let row = ChatSummary<String>(id: "fake:1", network: .telegram, title: "Fake", avatarURL: nil, preview: nil, timestamp: Date(), unreadCount: 0, destination: "fake")
         let list = ChatListViewModel<String>(sources: { [ChatListSource(provider: RowsProvider(chats: [row]), accountId: "test", label: "Test")] }, caches: directory)
