@@ -1,22 +1,31 @@
 import UIKit
 
-/// The grid a message's reaction row expands into, as in Telegram: a search field over the chat's custom emoji and
-/// every emoji by category, the user's reactions marked. `ChatReactionGrid` decides the sections.
+/// The grid a message's reaction row expands into, as in Telegram: a search field over the user's recent reactions,
+/// the chat's custom emoji and every emoji by category, the user's reactions marked. `ChatReactionGrid` decides the
+/// sections.
 final class ChatReactionGridView: UIView, UICollectionViewDelegate, UISearchTextFieldDelegate {
     private let customEmojis: [String: ChatCustomEmoji]
     private let choices: [String]?
+    private let recent: [String]
     private let selected: Set<String>
     private let onSelect: (String) -> Void
     private let searchField = UISearchTextField()
     private var collectionView: UICollectionView!
-    private var dataSource: UICollectionViewDiffableDataSource<String, ChatReactionGrid.Item>!
+    private var dataSource: UICollectionViewDiffableDataSource<String, Cell>!
     private var sections: [ChatReactionGrid.Section] = []
 
-    private static let columns = 8
+    private static let columns = ChatReactionGrid.recentCount
 
-    init(customEmojis: [String: ChatCustomEmoji], choices: [String]?, selected: Set<String>, onSelect: @escaping (String) -> Void) {
+    /// By section, since a recent emoji is also in its category.
+    private struct Cell: Hashable {
+        let section: String
+        let item: ChatReactionGrid.Item
+    }
+
+    init(customEmojis: [String: ChatCustomEmoji], choices: [String]?, recent: [String], selected: Set<String>, onSelect: @escaping (String) -> Void) {
         self.customEmojis = customEmojis
         self.choices = choices
+        self.recent = recent
         self.selected = selected
         self.onSelect = onSelect
         super.init(frame: .zero)
@@ -56,7 +65,8 @@ final class ChatReactionGridView: UIView, UICollectionViewDelegate, UISearchText
         collectionView.keyboardDismissMode = .onDrag
 
         let selected = selected
-        let registration = UICollectionView.CellRegistration<UICollectionViewCell, ChatReactionGrid.Item> { [weak self] cell, _, item in
+        let registration = UICollectionView.CellRegistration<UICollectionViewCell, Cell> { [weak self] cell, _, identifier in
+            let item = identifier.item
             var content = UIListContentConfiguration.cell()
             content.directionalLayoutMargins = .zero
             content.textProperties.alignment = .center
@@ -91,8 +101,8 @@ final class ChatReactionGridView: UIView, UICollectionViewDelegate, UISearchText
             content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 4, trailing: 8)
             header.contentConfiguration = content
         }
-        dataSource = UICollectionViewDiffableDataSource(collectionView: collectionView) { collectionView, indexPath, item in
-            collectionView.dequeueConfiguredReusableCell(using: registration, for: indexPath, item: item)
+        dataSource = UICollectionViewDiffableDataSource(collectionView: collectionView) { collectionView, indexPath, identifier in
+            collectionView.dequeueConfiguredReusableCell(using: registration, for: indexPath, item: identifier)
         }
         dataSource.supplementaryViewProvider = { collectionView, _, indexPath in
             collectionView.dequeueConfiguredReusableSupplementary(using: headerRegistration, for: indexPath)
@@ -116,15 +126,15 @@ final class ChatReactionGridView: UIView, UICollectionViewDelegate, UISearchText
     }
 
     private func apply(query: String) {
-        sections = ChatReactionGrid.sections(customEmojis: customEmojis, choices: choices, query: query)
-        var snapshot = NSDiffableDataSourceSnapshot<String, ChatReactionGrid.Item>()
-        // A snapshot takes each item once, and a choice can also be among the search results.
-        var seen = Set<ChatReactionGrid.Item>()
+        sections = ChatReactionGrid.sections(customEmojis: customEmojis, choices: choices, recent: recent, query: query)
+        var snapshot = NSDiffableDataSourceSnapshot<String, Cell>()
         for (index, section) in sections.enumerated() {
             // By title too, so a header whose title changed is drawn again.
             let id = "\(index)|\(section.title)"
             snapshot.appendSections([id])
-            snapshot.appendItems(section.items.filter { seen.insert($0).inserted }, toSection: id)
+            // A snapshot takes each item once, and a choice can also be among the search results.
+            var seen = Set<ChatReactionGrid.Item>()
+            snapshot.appendItems(section.items.filter { seen.insert($0).inserted }.map { Cell(section: id, item: $0) }, toSection: id)
         }
         dataSource.apply(snapshot, animatingDifferences: false)
         collectionView.setContentOffset(.zero, animated: false)
@@ -132,15 +142,16 @@ final class ChatReactionGridView: UIView, UICollectionViewDelegate, UISearchText
 
     private func reconfigure(_ item: ChatReactionGrid.Item) {
         var snapshot = dataSource.snapshot()
-        guard snapshot.itemIdentifiers.contains(item) else { return }
-        snapshot.reconfigureItems([item])
+        let cells = snapshot.itemIdentifiers.filter { $0.item == item }
+        guard !cells.isEmpty else { return }
+        snapshot.reconfigureItems(cells)
         dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     func collectionView(_: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        guard let item = dataSource.itemIdentifier(for: indexPath) else { return }
+        guard let identifier = dataSource.itemIdentifier(for: indexPath) else { return }
         searchField.resignFirstResponder()
-        onSelect(item.key)
+        onSelect(identifier.item.key)
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {

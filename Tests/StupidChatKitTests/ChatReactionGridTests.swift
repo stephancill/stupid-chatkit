@@ -44,4 +44,44 @@ final class ChatReactionGridTests: XCTestCase {
         XCTAssertEqual(sections.first?.items.first, .custom(cooking))
         XCTAssertTrue(sections.first?.items.contains(.emoji("🧑‍🍳")) == true)
     }
+
+    func testRecentReactionsLeadTheGridAsOneRow() {
+        let recent = ["🔥", ":cooking:", "👍", "😂", "❤️", "🙏", "😮", "🎉", "👀", "💯"]
+        let sections = ChatReactionGrid.sections(customEmojis: [cooking.key: cooking], choices: nil, recent: recent, query: "")
+        XCTAssertEqual(sections.map(\.title).prefix(2), ["Recently Used", "Food"])
+        XCTAssertEqual(sections.first?.items.count, ChatReactionGrid.recentCount)
+        XCTAssertEqual(sections.first?.items.prefix(2), [.emoji("🔥"), .custom(cooking)])
+        XCTAssertTrue(sections.contains { $0.title == "Smileys & Emotion" && $0.items.contains(.emoji("😂")) }, "a recent emoji stays in its category")
+    }
+
+    func testRecentReactionsKeepToWhatTheChatTakes() {
+        let recent = [":cooking:", ":secret:", "❤️", "🔥", "🦄"]
+        let sections = ChatReactionGrid.sections(customEmojis: [hidden.key: hidden], choices: ["❤", "👍"], recent: recent, query: "")
+        XCTAssertEqual(sections.first?.title, "Recently Used")
+        XCTAssertEqual(sections.first?.items, [.emoji("❤")], "custom emoji from elsewhere, hidden ones and emoji the network doesn't take are left out, and a choice is written as the network writes it")
+        let anyEmoji = ChatReactionGrid.sections(customEmojis: [:], choices: nil, recent: ["❤"], query: "")
+        XCTAssertEqual(anyEmoji.first?.items, [.emoji("❤️")], "the catalog's spelling where any emoji goes")
+    }
+
+    func testNoRecentRowWithoutRecentsOrWhileSearching() {
+        XCTAssertNotEqual(ChatReactionGrid.sections(customEmojis: [:], choices: nil, recent: [], query: "").first?.title, "Recently Used")
+        XCTAssertEqual(ChatReactionGrid.sections(customEmojis: [:], choices: nil, recent: ["🔥"], query: "fire").map(\.title), ["Results"])
+    }
+
+    func testRecentReactionsMoveToTheFrontOnce() throws {
+        let suite = "ChatRecentReactionsTests"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let recents = ChatRecentReactions(defaults: defaults)
+        recents.use("🔥")
+        recents.use("❤️")
+        recents.use("👍")
+        recents.use("❤")
+        XCTAssertEqual(recents.keys, ["❤", "👍", "🔥"])
+        for index in 0 ..< ChatRecentReactions.limit + 5 {
+            recents.use(":e\(index):")
+        }
+        XCTAssertEqual(recents.keys.count, ChatRecentReactions.limit)
+    }
 }

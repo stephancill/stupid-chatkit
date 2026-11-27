@@ -20,6 +20,8 @@ struct ChatMessageMenu {
         let customEmojis: [String: ChatCustomEmoji]
         /// The only emoji the network takes; `nil` for any.
         let choices: [String]?
+        /// The user's recent reactions, most recent first.
+        let recent: [String]
         let selected: Set<String>
         let select: @MainActor (String) -> Void
     }
@@ -338,7 +340,7 @@ final class ChatMessageFocusController: UIViewController, UITextViewDelegate {
     /// stays clear of the keyboard while searching.
     private func expandReactions() {
         guard grid == nil, let source = menu.reactionGrid, let reactions else { return }
-        let content = ChatReactionGridView(customEmojis: source.customEmojis, choices: source.choices, selected: source.selected) { [weak self] emoji in
+        let content = ChatReactionGridView(customEmojis: source.customEmojis, choices: source.choices, recent: source.recent, selected: source.selected) { [weak self] emoji in
             self?.close { source.select(emoji) }
         }
         let panel = panel(content, cornerRadius: 26, insets: .zero)

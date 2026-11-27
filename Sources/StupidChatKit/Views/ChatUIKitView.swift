@@ -153,6 +153,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     private var shownReceipts: [String: ChatReceipt] = [:]
     private var avatarPrefetches = Set<URL>()
     private let reactionHaptic = UISelectionFeedbackGenerator()
+    private let recentReactions = ChatRecentReactions()
     private let audioPlayer = ChatAudioPreviewPlayer()
     /// The open Quick Look preview's file, which its weak data source needs kept.
     private var filePreviewSource: ChatFilePreviewSource?
@@ -2590,6 +2591,7 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             menu.reactionGrid = ChatMessageMenu.ReactionGrid(
                 customEmojis: viewModel.customEmojis,
                 choices: viewModel.reactionChoices,
+                recent: recentReactions.keys,
                 selected: mine,
             ) { [weak self] emoji in
                 self?.toggleReaction(emoji, on: id)
@@ -3345,6 +3347,9 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     private func toggleReaction(_ emoji: String, on id: String) {
         guard viewModel.canReact, !viewModel.isQuickLook, let message = messagesById[id], !message.isNotice, !message.isDeleted else { return }
         reactionHaptic.selectionChanged()
+        if !viewModel.yourEmojis(on: id).contains(emoji) {
+            recentReactions.use(emoji)
+        }
         Task { await viewModel.toggleReaction(emoji, on: id) }
     }
 
