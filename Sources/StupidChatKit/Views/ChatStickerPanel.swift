@@ -85,11 +85,12 @@ final class ChatStickerPanel: UIInputView, UICollectionViewDataSource, UICollect
         emojiBar.spacing = 2
         for emoji in Self.emoji {
             var configuration = UIButton.Configuration.plain()
-            configuration.title = emoji
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6)
+            configuration.attributedTitle = AttributedString(emoji, attributes: AttributeContainer([.font: UIFont.systemFont(ofSize: 24)]))
+            configuration.contentInsets = .zero
             configuration.background.cornerRadius = 8
             let button = UIButton(configuration: configuration)
-            button.titleLabel?.font = .systemFont(ofSize: 24)
+            // A fixed size: on a Mac the buttons' own size came out empty, piling every emoji onto the first.
+            button.widthAnchor.constraint(equalToConstant: 40).isActive = true
             button.accessibilityLabel = "Stickers for \(emoji)"
             button.addAction(UIAction { [weak self] _ in self?.select(emoji: emoji) }, for: .primaryActionTriggered)
             emojiBar.addArrangedSubview(button)
@@ -265,8 +266,8 @@ final class ChatStickerPanel: UIInputView, UICollectionViewDataSource, UICollect
         emojiTask?.cancel()
         selectedEmoji = selectedEmoji == emoji ? nil : emoji
         emojiResults = nil
-        for case let button as UIButton in emojiBar.arrangedSubviews {
-            button.configuration?.background.backgroundColor = button.configuration?.title == selectedEmoji ? .secondarySystemFill : .clear
+        for case let (emoji, button as UIButton) in zip(Self.emoji, emojiBar.arrangedSubviews) {
+            button.configuration?.background.backgroundColor = emoji == selectedEmoji ? .secondarySystemFill : .clear
         }
         statusLabel.text = nil
         if let selectedEmoji, let cached = emojiCache[selectedEmoji] {

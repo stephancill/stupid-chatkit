@@ -28,7 +28,7 @@ struct ChatUIKitView: UIViewControllerRepresentable {
 
 final class ChatViewController: UIViewController, UICollectionViewDelegate, UITextViewDelegate,
     PHPickerViewControllerDelegate, UIDocumentPickerDelegate, UIDropInteractionDelegate, UICollectionViewDropDelegate,
-    UIImagePickerControllerDelegate, UINavigationControllerDelegate
+    UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIPopoverPresentationControllerDelegate
 {
     /// One section per calendar day, headed by its date (`ChatDateHeaderView`).
     private enum Section: Hashable {
@@ -1864,13 +1864,20 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
     }
 
     /// The sticker panel takes the keyboard's place, as in Telegram, so the chat stays in view; on a Mac, where
-    /// there's no on-screen keyboard to replace, it opens as a sheet.
+    /// there's no on-screen keyboard to replace, it opens as a popover from the sticker button, as Mac pickers do.
     private func toggleStickerPanel() {
         let panel = makeStickerPanel()
         if ProcessInfo.processInfo.isiOSAppOnMac {
             let sheet = UIViewController()
             sheet.view = panel
             sheet.preferredContentSize = CGSize(width: 420, height: 420)
+            sheet.modalPresentationStyle = .popover
+            if let popover = sheet.popoverPresentationController {
+                popover.sourceView = stickerButton
+                popover.sourceRect = stickerButton.bounds
+                popover.permittedArrowDirections = [.down]
+                popover.delegate = self
+            }
             panel.send = { [weak self, weak panel, weak sheet] sticker in
                 panel?.didSend(sticker)
                 sheet?.dismiss(animated: true)
@@ -1892,6 +1899,11 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             textView.becomeFirstResponder()
         }
         updateStickerButton()
+    }
+
+    /// Keeps the sticker popover a popover in the iPhone app's compact width on a Mac, rather than a sheet.
+    func adaptivePresentationStyle(for _: UIPresentationController, traitCollection _: UITraitCollection) -> UIModalPresentationStyle {
+        .none
     }
 
     /// An outline face, as the microphone is: iOS 27's symbols swapped the two faces, so `face.smiling` is the
