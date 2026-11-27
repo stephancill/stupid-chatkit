@@ -251,6 +251,10 @@ final class ChatViewController: UIViewController, UICollectionViewDelegate, UITe
             let width = ProcessInfo.processInfo.isiOSAppOnMac ? 420 : view.bounds.width
             makeStickerPanel().preload(width: width, scale: view.window?.screen.scale ?? traitCollection.displayScale)
         }
+        // On a Mac, where focusing raises no on-screen keyboard, a chat opens ready to type, as in Messages.
+        if ProcessInfo.processInfo.isiOSAppOnMac, textView.isEditable, presentedViewController == nil {
+            textView.becomeFirstResponder()
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
